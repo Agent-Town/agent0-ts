@@ -59,7 +59,7 @@
   },
   "dependencies": {
     "graphql-request": "^6.1.0",
-    "ipfs-http-client": "^60.0.1",
+    "kubo-rpc-client": "^6.1.0",
     "viem": "^2.37.5"
   },
   "devDependencies": {

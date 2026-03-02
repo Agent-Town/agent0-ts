@@ -1,11 +1,11 @@
 /**
  * IPFS client for decentralized storage with support for multiple providers:
- * - Local IPFS nodes (via ipfs-http-client)
+ * - Local IPFS nodes (via kubo-rpc-client)
  * - Pinata IPFS pinning service
  * - Filecoin Pin service
  */
 
-import type { IPFSHTTPClient } from 'ipfs-http-client';
+import type { KuboRPCClient } from 'kubo-rpc-client';
 import type { RegistrationFile } from '../models/interfaces.js';
 import { IPFS_GATEWAYS, TIMEOUTS } from '../utils/constants.js';
 import { parseAgentId } from '../utils/id-format.js';
@@ -24,7 +24,7 @@ export interface IPFSClientConfig {
 export class IPFSClient {
   private provider: 'pinata' | 'filecoinPin' | 'node';
   private config: IPFSClientConfig;
-  private client?: IPFSHTTPClient;
+  private client?: KuboRPCClient;
 
   constructor(config: IPFSClientConfig) {
     this.config = config;
@@ -46,11 +46,11 @@ export class IPFSClient {
   }
 
   /**
-   * Initialize IPFS HTTP client (lazy, only when needed)
+   * Initialize Kubo RPC client (lazy, only when needed)
    */
   private async _ensureClient(): Promise<void> {
     if (this.provider === 'node' && !this.client && this.config.url) {
-      const { create } = await import('ipfs-http-client');
+      const { create } = await import('kubo-rpc-client');
       this.client = create({ url: this.config.url });
     }
   }
@@ -436,10 +436,9 @@ export class IPFSClient {
    */
   async close(): Promise<void> {
     if (this.client) {
-      // IPFS HTTP client doesn't have a close method in the same way
+      // Kubo RPC client doesn't expose a close method
       // But we can clear the reference
       this.client = undefined;
     }
   }
 }
-
