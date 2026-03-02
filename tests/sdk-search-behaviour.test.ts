@@ -13,6 +13,15 @@ const RUN_LIVE = process.env.RUN_LIVE_TESTS === '1' || process.env.SDK_LIVE === 
 const describeMaybe = RUN_LIVE ? describe : describe.skip;
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const isTransientSemanticError = (e: unknown): boolean => {
+  const msg = String((e as any)?.message || e);
+  return (
+    msg.includes('HTTP 429') ||
+    msg.includes('HTTP 500') ||
+    msg.includes('TimeoutError') ||
+    msg.includes('aborted due to timeout')
+  );
+};
 
 describeMaybe('SDK searchAgents (subgraph-only, no keyword)', () => {
   let sdk: SDK;
@@ -129,15 +138,15 @@ describeMaybe('SDK searchAgents with keyword (semantic, 1 request)', () => {
         { semanticTopK: 10 }
       );
     } catch (e: any) {
-      // Semantic endpoint is rate-limited; don't fail the whole integration run on 429.
-      if (String(e?.message || e).includes('HTTP 429')) {
-        console.warn('[live-test] Semantic endpoint rate limited (429); skipping keyword assertions.');
+      // Semantic endpoint can be rate-limited, timeout, or transiently fail upstream.
+      if (isTransientSemanticError(e)) {
+        console.warn('[live-test] Semantic endpoint transient failure; skipping keyword assertions.');
         keywordResult = [];
         return;
       }
       throw e;
     }
-  }, 25000);
+  }, 70000);
 
   it('returns an array', () => {
     expect(Array.isArray(keywordResult)).toBe(true);
