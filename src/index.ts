@@ -21,10 +21,9 @@ export { SubgraphClient } from './core/subgraph-client.js';
 export { FeedbackManager } from './core/feedback-manager.js';
 export { EndpointCrawler } from './core/endpoint-crawler.js';
 export type { McpCapabilities, A2aCapabilities } from './core/endpoint-crawler.js';
-export { AgentIndexer } from './core/indexer.js';
+export { AgentIndexer, ENTITY_TYPE_HYDRATION_MAX } from './core/indexer.js';
 export { TransactionHandle } from './core/transaction-handle.js';
 export type { TransactionMined, TransactionWaitOptions } from './core/transaction-handle.js';
 
 // Export contract definitions
 export * from './core/contracts.js';
-

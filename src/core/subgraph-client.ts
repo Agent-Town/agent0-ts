@@ -69,6 +69,7 @@ export type QueryAgent = {
 export type AgentRegistrationFile = {
   id: string;
   agentId?: string | null;
+  entityType?: string | null;
   name?: string | null;
   description?: string | null;
   image?: string | null;
@@ -134,6 +135,14 @@ export class SubgraphClient {
       ) {
         // Avoid String.prototype.replaceAll for older TS lib targets.
         const q2 = query.split('x402Support').join('x402support');
+        const data2 = await this.client.request<T>(q2, variables || {});
+        return data2;
+      }
+      if (
+        (msg.includes('Cannot query field "entityType"') || msg.includes('has no field `entityType`')) &&
+        query.includes('entityType')
+      ) {
+        const q2 = query.split('entityType').join('');
         const data2 = await this.client.request<T>(q2, variables || {});
         return data2;
       }
@@ -222,6 +231,7 @@ export class SubgraphClient {
           registrationFile {
             id
             agentId
+            entityType
             name
             description
             image
@@ -317,6 +327,7 @@ export class SubgraphClient {
           registrationFile {
             id
             agentId
+            entityType
             name
             description
             image
@@ -555,6 +566,7 @@ export class SubgraphClient {
     return {
       chainId,
       agentId: agentIdStr,
+      entityType: regFile?.entityType || undefined,
       // Per ERC-8004 registration schema, name SHOULD be present. If missing in subgraph data,
       // fall back to agentId string to avoid returning an unusable empty name.
       name: regFile?.name || agentIdStr,
@@ -876,4 +888,3 @@ export class SubgraphClient {
    * Unified search lives in `SDK.searchAgents()` with `filters.feedback` and related filter surfaces.
    */
 }
-

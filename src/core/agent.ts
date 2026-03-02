@@ -7,9 +7,15 @@ import { privateKeyToAccount } from 'viem/accounts';
 import type {
   RegistrationFile,
   Endpoint,
+  EntityType,
 } from '../models/interfaces.js';
 import type { AgentId, Address, URI } from '../models/types.js';
 import { EndpointType, TrustModel } from '../models/enums.js';
+import type {
+  PermissionManifestRefV1,
+  PermissionManifestV1,
+  ProvenanceV1,
+} from '../models/permission-manifest.js';
 import type { SDK } from './sdk.js';
 import { EndpointCrawler } from './endpoint-crawler.js';
 import { parseAgentId } from '../utils/id-format.js';
@@ -66,6 +72,10 @@ export class Agent {
 
   get image(): URI | undefined {
     return this.registrationFile.image;
+  }
+
+  get entityType(): EntityType {
+    return this.registrationFile.entityType || 'agent';
   }
 
   get mcpEndpoint(): string | undefined {
@@ -744,6 +754,32 @@ export class Agent {
     return this;
   }
 
+  setEntityType(type: EntityType): this {
+    this.registrationFile.entityType = type;
+    this.registrationFile.updatedAt = Math.floor(Date.now() / 1000);
+    return this;
+  }
+
+  setPermissionManifest(manifest: PermissionManifestV1 | PermissionManifestRefV1): this {
+    this.registrationFile.permissionManifest = manifest;
+    this.registrationFile.updatedAt = Math.floor(Date.now() / 1000);
+    return this;
+  }
+
+  getPermissionManifest(): PermissionManifestV1 | PermissionManifestRefV1 | undefined {
+    return this.registrationFile.permissionManifest;
+  }
+
+  setProvenance(provenance: ProvenanceV1): this {
+    this.registrationFile.provenance = provenance;
+    this.registrationFile.updatedAt = Math.floor(Date.now() / 1000);
+    return this;
+  }
+
+  getProvenance(): ProvenanceV1 | undefined {
+    return this.registrationFile.provenance;
+  }
+
   setTrust(
     reputation: boolean = false,
     cryptoEconomic: boolean = false,
@@ -1190,4 +1226,3 @@ export class Agent {
     throw new Error('Could not extract agent ID from transaction receipt - no Registered or Transfer event found');
   }
 }
-

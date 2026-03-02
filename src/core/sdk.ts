@@ -3,6 +3,8 @@
  */
 import type {
   AgentSummary,
+  CreateEntityInput,
+  EntityType,
   Feedback,
   SearchFeedbackParams,
   RegistrationFile,
@@ -240,21 +242,41 @@ export class SDK {
    * Create a new agent (off-chain object in memory)
    */
   createAgent(name: string, description: string, image?: URI): Agent {
-    const registrationFile: RegistrationFile = {
-      name,
-      description,
-      image,
-      endpoints: [],
-      // Default trust model: reputation (if caller doesn't set one explicitly).
-      trustModels: [TrustModel.REPUTATION],
-      owners: [],
-      operators: [],
-      active: false,
-      x402support: false,
-      metadata: {},
-      updatedAt: Math.floor(Date.now() / 1000),
-    };
+    const registrationFile = this._createBaseRegistrationFile(name, description, image);
     return new Agent(this, registrationFile);
+  }
+
+  /**
+   * Create a new entity (off-chain object in memory)
+   */
+  createEntity(input: CreateEntityInput): Agent {
+    const registrationFile = this._createBaseRegistrationFile(input.name, input.description, input.image);
+    registrationFile.entityType = input.entityType;
+    return new Agent(this, registrationFile);
+  }
+
+  createHuman(name: string, description: string, image?: URI): Agent {
+    return this.createEntity({ entityType: 'human', name, description, image });
+  }
+
+  createTool(name: string, description: string, image?: URI): Agent {
+    return this.createEntity({ entityType: 'tool', name, description, image });
+  }
+
+  createSkill(name: string, description: string, image?: URI): Agent {
+    return this.createEntity({ entityType: 'skill', name, description, image });
+  }
+
+  createExperience(name: string, description: string, image?: URI): Agent {
+    return this.createEntity({ entityType: 'experience', name, description, image });
+  }
+
+  createHouse(name: string, description: string, image?: URI): Agent {
+    return this.createEntity({ entityType: 'house', name, description, image });
+  }
+
+  createOrganization(name: string, description: string, image?: URI): Agent {
+    return this.createEntity({ entityType: 'organization', name, description, image });
   }
 
   /**
@@ -504,6 +526,23 @@ export class SDK {
     return this._feedbackManager.getReputationSummary(agentId, tag1, tag2);
   }
 
+  private _createBaseRegistrationFile(name: string, description: string, image?: URI): RegistrationFile {
+    return {
+      name,
+      description,
+      image,
+      endpoints: [],
+      // Default trust model: reputation (if caller doesn't set one explicitly).
+      trustModels: [TrustModel.REPUTATION],
+      owners: [],
+      operators: [],
+      active: false,
+      x402support: false,
+      metadata: {},
+      updatedAt: Math.floor(Date.now() / 1000),
+    };
+  }
+
   /**
    * Create an empty registration file structure
    */
@@ -603,6 +642,19 @@ export class SDK {
       : [];
 
     return {
+      entityType: typeof rawData.entityType === 'string' ? (rawData.entityType as EntityType) : undefined,
+      provenance:
+        typeof rawData.provenance === 'object' &&
+        rawData.provenance !== null &&
+        !Array.isArray(rawData.provenance)
+          ? (rawData.provenance as RegistrationFile['provenance'])
+          : undefined,
+      permissionManifest:
+        typeof rawData.permissionManifest === 'object' &&
+        rawData.permissionManifest !== null &&
+        !Array.isArray(rawData.permissionManifest)
+          ? (rawData.permissionManifest as RegistrationFile['permissionManifest'])
+          : undefined,
       name: typeof rawData.name === 'string' ? rawData.name : '',
       description: typeof rawData.description === 'string' ? rawData.description : '',
       image: typeof rawData.image === 'string' ? rawData.image : undefined,
@@ -738,4 +790,3 @@ export class SDK {
     return this._subgraphClient;
   }
 }
-

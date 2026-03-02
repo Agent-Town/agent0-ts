@@ -4,6 +4,21 @@
 
 import type { AgentId, Address, URI, Timestamp } from './types.js';
 import type { EndpointType, TrustModel } from './enums.js';
+import type {
+  PermissionManifestRefV1,
+  PermissionManifestV1,
+  ProvenanceV1,
+} from './permission-manifest.js';
+
+export type EntityTypeCanonical =
+  | 'agent'
+  | 'human'
+  | 'tool'
+  | 'skill'
+  | 'experience'
+  | 'house'
+  | 'organization';
+export type EntityType = EntityTypeCanonical | (string & {});
 
 /**
  * Represents an agent endpoint
@@ -20,6 +35,9 @@ export interface Endpoint {
 export interface RegistrationFile {
   agentId?: AgentId; // None until minted
   agentURI?: URI; // where this file is (or will be) published
+  entityType?: EntityType;
+  provenance?: ProvenanceV1;
+  permissionManifest?: PermissionManifestV1 | PermissionManifestRefV1;
   name: string;
   description: string;
   image?: URI;
@@ -41,6 +59,7 @@ export interface RegistrationFile {
 export interface AgentSummary {
   chainId: number; // ChainId
   agentId: AgentId;
+  entityType?: EntityType;
   name: string;
   image?: URI;
   description: string;
@@ -175,6 +194,7 @@ export interface SearchFilters {
   // Chain / identity
   chains?: number[] | 'all';
   agentIds?: AgentId[];
+  entityType?: EntityType | EntityType[];
 
   // Text
   name?: string; // substring
@@ -289,8 +309,14 @@ export interface FeedbackSearchOptions {
   maxValue?: number;
 }
 
+export interface CreateEntityInput {
+  entityType: EntityType;
+  name: string;
+  description: string;
+  image?: URI;
+}
+
 /**
  * Metadata for multi-chain search results
  */
 // Note: Pagination has been removed; search APIs now return full result lists.
-
