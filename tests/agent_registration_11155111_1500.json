@@ -1,0 +1,39 @@
+{
+  "name": "Test Agent 1128",
+  "description": "Created at 1772450041",
+  "image": "https://example.com/image_1128.png",
+  "endpoints": [
+    {
+      "type": "MCP",
+      "value": "https://api.example.com/mcp/1128",
+      "meta": {
+        "version": "2025-06-3"
+      }
+    },
+    {
+      "type": "A2A",
+      "value": "https://api.example.com/a2a/1128.json",
+      "meta": {
+        "version": "0.32"
+      }
+    },
+    {
+      "type": "ENS",
+      "value": "test1128.eth",
+      "meta": {
+        "version": "1.6"
+      }
+    }
+  ],
+  "trustModels": [
+    "reputation"
+  ],
+  "owners": [],
+  "operators": [],
+  "active": true,
+  "x402support": false,
+  "metadata": {},
+  "updatedAt": 1772450056,
+  "agentId": "11155111:1500",
+  "agentURI": "https://example.com/agents/registration.json"
+}

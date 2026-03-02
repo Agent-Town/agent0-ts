@@ -113,41 +113,51 @@ export class SubgraphClient {
    * Execute a GraphQL query against the subgraph
    */
   async query<T = unknown>(query: string, variables?: Record<string, unknown>): Promise<T> {
-    try {
-      const data = await this.client.request<T>(query, variables || {});
-      return data;
-    } catch (error) {
-      // Backwards/forwards compatibility for hosted subgraphs:
-      // Some deployments still expose `x402support` instead of `x402Support`.
-      const msg = error instanceof Error ? error.message : String(error);
-      // Some deployments do not yet expose `hasOASF` on AgentRegistrationFile.
-      if (
-        (msg.includes('Cannot query field "hasOASF"') || msg.includes('has no field `hasOASF`')) &&
-        query.includes('hasOASF')
-      ) {
-        const q2 = query.split('hasOASF').join('oasfEndpoint');
-        const data2 = await this.client.request<T>(q2, variables || {});
-        return data2;
+    const vars = variables || {};
+    let q = query;
+
+    // Hosted subgraph compatibility: some deployments miss multiple fields at once.
+    // Retry with cumulative rewrites so we can adapt in one request path.
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      try {
+        const data = await this.client.request<T>(q, vars);
+        return data;
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        let rewritten = q;
+
+        if (
+          (msg.includes('Cannot query field "hasOASF"') || msg.includes('has no field `hasOASF`')) &&
+          rewritten.includes('hasOASF')
+        ) {
+          rewritten = rewritten.split('hasOASF').join('oasfEndpoint');
+        }
+
+        if (
+          (msg.includes('Cannot query field "x402Support"') || msg.includes('has no field `x402Support`')) &&
+          rewritten.includes('x402Support')
+        ) {
+          // Avoid String.prototype.replaceAll for older TS lib targets.
+          rewritten = rewritten.split('x402Support').join('x402support');
+        }
+
+        if (
+          (msg.includes('Cannot query field "entityType"') || msg.includes('has no field `entityType`')) &&
+          rewritten.includes('entityType')
+        ) {
+          rewritten = rewritten.split('entityType').join('');
+        }
+
+        if (rewritten !== q) {
+          q = rewritten;
+          continue;
+        }
+
+        throw new Error(`Failed to query subgraph: ${error}`);
       }
-      if (
-        (msg.includes('Cannot query field "x402Support"') || msg.includes('has no field `x402Support`')) &&
-        query.includes('x402Support')
-      ) {
-        // Avoid String.prototype.replaceAll for older TS lib targets.
-        const q2 = query.split('x402Support').join('x402support');
-        const data2 = await this.client.request<T>(q2, variables || {});
-        return data2;
-      }
-      if (
-        (msg.includes('Cannot query field "entityType"') || msg.includes('has no field `entityType`')) &&
-        query.includes('entityType')
-      ) {
-        const q2 = query.split('entityType').join('');
-        const data2 = await this.client.request<T>(q2, variables || {});
-        return data2;
-      }
-      throw new Error(`Failed to query subgraph: ${error}`);
     }
+
+    throw new Error('Failed to query subgraph: compatibility retry limit reached');
   }
 
   /**

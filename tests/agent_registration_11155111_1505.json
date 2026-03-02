@@ -1,0 +1,41 @@
+{
+  "name": "Test Agent 8558",
+  "description": "Created at 1772456986",
+  "image": "https://example.com/image_8558.png",
+  "endpoints": [
+    {
+      "type": "MCP",
+      "value": "https://api.example.com/mcp/8558",
+      "meta": {
+        "version": "2025-06-20"
+      }
+    },
+    {
+      "type": "A2A",
+      "value": "https://api.example.com/a2a/8558.json",
+      "meta": {
+        "version": "0.31"
+      }
+    },
+    {
+      "type": "ENS",
+      "value": "test8558.eth",
+      "meta": {
+        "version": "1.1"
+      }
+    }
+  ],
+  "trustModels": [
+    "reputation",
+    "crypto-economic",
+    "tee-attestation"
+  ],
+  "owners": [],
+  "operators": [],
+  "active": true,
+  "x402support": false,
+  "metadata": {},
+  "updatedAt": 1772457005,
+  "agentId": "11155111:1505",
+  "agentURI": "https://example.com/agents/registration.json"
+}
