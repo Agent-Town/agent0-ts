@@ -38,7 +38,9 @@ export class Agent {
 
   constructor(private sdk: SDK, registrationFile: RegistrationFile) {
     this.registrationFile = registrationFile;
-    this._endpointCrawler = new EndpointCrawler(5000);
+    this._endpointCrawler = new EndpointCrawler(5000, (url, source) =>
+      this.sdk.validateOutboundUrl(url, source)
+    );
   }
 
   private async _waitForTransactionWithRetry(hash: `0x${string}`, timeoutMs: number): Promise<ChainReceipt> {
@@ -878,10 +880,14 @@ export class Agent {
       return new TransactionHandle(txHash as Hex, this.sdk.chainClient, async () => {
         // Best-effort metadata updates (may involve additional txs)
         if (this._dirtyMetadata.size > 0) {
-          try {
-            await this._updateMetadataOnChain();
-          } catch {
-            // Preserve previous behavior: ignore failures/timeouts and continue.
+          if (this.sdk.metadataUpdatePolicy === 'strict') {
+            await this._updateMetadataOnChain(true);
+          } else {
+            try {
+              await this._updateMetadataOnChain(false);
+            } catch {
+              // Preserve previous behavior: ignore failures/timeouts and continue.
+            }
           }
         }
 
@@ -1123,7 +1129,7 @@ export class Agent {
     return this.registrationFile;
   }
 
-  private async _updateMetadataOnChain(): Promise<void> {
+  private async _updateMetadataOnChain(strict: boolean = false): Promise<void> {
     const metadataEntries = this._collectMetadataForRegistration();
     const { tokenId } = parseAgentId(this.registrationFile.agentId!);
     const identityRegistryAddress = this.sdk.identityRegistryAddress();
@@ -1144,6 +1150,9 @@ export class Agent {
         try {
           await this._waitForTransactionWithRetry(txHash, TIMEOUTS.TRANSACTION_WAIT);
         } catch (error) {
+          if (strict) {
+            throw error;
+          }
           // Transaction was sent and will eventually confirm - continue silently
         }
       }

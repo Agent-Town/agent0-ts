@@ -1,6 +1,9 @@
 /**
  * Portable SKILL.md installer example.
  *
+ * SECURITY NOTE: This is an example flow. Do not use as-is in production
+ * without environment-specific hardening (egress policy, authz, secret management).
+ *
  * This example publishes two skills:
  * 1) an installer skill (`portable_verified_skill_installer`)
  * 2) a target skill (`verified_web_research`)

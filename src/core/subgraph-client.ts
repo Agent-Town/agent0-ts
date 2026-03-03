@@ -191,47 +191,45 @@ export class SubgraphClient {
       supportedWhere.registrationFile_ = where.registrationFile_;
     }
 
-    // Build WHERE clause with support for nested filters
-    let whereClause = '';
-    if (Object.keys(supportedWhere).length > 0) {
-      const conditions: string[] = [];
-      for (const [key, value] of Object.entries(supportedWhere)) {
-        if ((key === 'registrationFile' || key === 'registrationFile_') && typeof value === 'object') {
-          // Handle nested registrationFile filters
-          // Python SDK uses "registrationFile_" (with underscore) for nested filters in GraphQL
-          const nestedConditions: string[] = [];
-          for (const [nestedKey, nestedValue] of Object.entries(value as Record<string, unknown>)) {
-            if (typeof nestedValue === 'boolean') {
-              nestedConditions.push(`${nestedKey}: ${nestedValue.toString().toLowerCase()}`);
-            } else if (typeof nestedValue === 'string') {
-              nestedConditions.push(`${nestedKey}: "${nestedValue}"`);
-            } else if (nestedValue === null) {
-              if (nestedKey.endsWith('_not')) {
-                nestedConditions.push(`${nestedKey}: null`);
-              } else {
-                nestedConditions.push(`${nestedKey}_not: null`);
-              }
-            }
+    // Build typed where input (variables-based) to avoid GraphQL string interpolation.
+    const whereInput: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(supportedWhere)) {
+      if ((key === 'registrationFile' || key === 'registrationFile_') && value && typeof value === 'object') {
+        const nested: Record<string, unknown> = {};
+        for (const [nestedKey, nestedValue] of Object.entries(value as Record<string, unknown>)) {
+          if (nestedValue === null) {
+            const nestedField = nestedKey.endsWith('_not') ? nestedKey : `${nestedKey}_not`;
+            nested[nestedField] = null;
+            continue;
           }
-          if (nestedConditions.length > 0) {
-            conditions.push(`registrationFile_: { ${nestedConditions.join(', ')} }`);
+          if (
+            typeof nestedValue === 'boolean' ||
+            typeof nestedValue === 'string' ||
+            typeof nestedValue === 'number' ||
+            Array.isArray(nestedValue)
+          ) {
+            nested[nestedKey] = nestedValue;
           }
-        } else if (typeof value === 'boolean') {
-          conditions.push(`${key}: ${value.toString().toLowerCase()}`);
-        } else if (typeof value === 'string') {
-          conditions.push(`${key}: "${value}"`);
-        } else if (typeof value === 'number') {
-          conditions.push(`${key}: ${value}`);
-        } else if (Array.isArray(value)) {
-          conditions.push(`${key}: ${JSON.stringify(value)}`);
-        } else if (value === null) {
-          // Don't add _not if the key already ends with _not (e.g., registrationFile_not)
-          const filterKey = key.endsWith('_not') ? key : `${key}_not`;
-          conditions.push(`${filterKey}: null`);
         }
+        if (Object.keys(nested).length > 0) {
+          whereInput.registrationFile_ = nested;
+        }
+        continue;
       }
-      if (conditions.length > 0) {
-        whereClause = `where: { ${conditions.join(', ')} }`;
+
+      if (value === null) {
+        const field = key.endsWith('_not') ? key : `${key}_not`;
+        whereInput[field] = null;
+        continue;
+      }
+
+      if (
+        typeof value === 'boolean' ||
+        typeof value === 'string' ||
+        typeof value === 'number' ||
+        Array.isArray(value)
+      ) {
+        whereInput[key] = value;
       }
     }
 
@@ -268,9 +266,9 @@ export class SubgraphClient {
       : '';
 
     const query = `
-      query GetAgents($first: Int!, $skip: Int!, $orderBy: Agent_orderBy!, $orderDirection: OrderDirection!) {
+      query GetAgents($where: Agent_filter, $first: Int!, $skip: Int!, $orderBy: Agent_orderBy!, $orderDirection: OrderDirection!) {
         agents(
-          ${whereClause}
+          where: $where
           first: $first
           skip: $skip
           orderBy: $orderBy
@@ -295,6 +293,7 @@ export class SubgraphClient {
 
     // GraphQL enum expects lowercase
     const variables = {
+      where: Object.keys(whereInput).length > 0 ? whereInput : null,
       first,
       skip,
       orderBy,

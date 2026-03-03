@@ -1,6 +1,9 @@
 /**
  * End-to-end SKILL.md publishing + verified OpenClaw install.
  *
+ * SECURITY NOTE: This is an example flow. Do not use as-is in production
+ * without environment-specific hardening (egress policy, authz, secret management).
+ *
  * Flow:
  * 1) Read a local SKILL.md file.
  * 2) Pin the SKILL.md bytes to IPFS and compute SHA-256.

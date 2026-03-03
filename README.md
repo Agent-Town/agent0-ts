@@ -109,6 +109,36 @@ const sdk = new SDK({
 });
 ```
 
+### 1c. Security Hardening (Optional, Backward-Compatible)
+
+```typescript
+const sdk = new SDK({
+  chainId: 11155111,
+  rpcUrl: process.env.RPC_URL!,
+  walletProvider: provider,
+
+  // Outbound URL policy for remote fetches (MCP/A2A/registration hydration)
+  outboundUrlPolicy: {
+    enabled: true,
+    allowedHosts: ['*.example.com', 'ipfs.io', 'gateway.pinata.cloud', 'dweb.link'],
+    allowLocalhost: false,
+    allowPrivateNetworks: false,
+  },
+
+  // Registration integrity verification on loadAgent()
+  registrationIntegrity: {
+    mode: 'if-present', // 'off' | 'if-present' | 'required'
+    hashMetadataKey: 'registration.sha256',
+  },
+
+  // Browser private key behavior: 'allow' | 'warn' | 'deny'
+  browserPrivateKeyPolicy: 'deny',
+
+  // Metadata update behavior during registerIPFS() updates
+  metadataUpdatePolicy: 'strict', // 'best-effort' (default) | 'strict'
+});
+```
+
 ### 2. Create and Register Agent
 
 ```typescript
