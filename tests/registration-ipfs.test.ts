@@ -6,8 +6,9 @@
  */
 
 import { SDK } from '../src/index';
-import { CHAIN_ID, RPC_URL, AGENT_PRIVATE_KEY, PINATA_JWT, CLIENT_PRIVATE_KEY, printConfig } from './config';
+import { CHAIN_ID, RPC_URL, AGENT_PRIVATE_KEY, PINATA_JWT, printConfig } from './config';
 import { privateKeyToAccount } from 'viem/accounts';
+import { randomBytes } from 'crypto';
 
 const HAS_REQUIRED_ENV = Boolean(
   RPC_URL &&
@@ -17,13 +18,11 @@ const HAS_REQUIRED_ENV = Boolean(
     PINATA_JWT &&
     PINATA_JWT.trim() !== ''
 );
-const HAS_CLIENT_KEY = Boolean(CLIENT_PRIVATE_KEY && CLIENT_PRIVATE_KEY.trim() !== '');
 // Live/integration test (on-chain + IPFS).
 // Default: enabled when env vars are present. Set RUN_LIVE_TESTS=0 to disable.
 const RUN_LIVE_TESTS = process.env.RUN_LIVE_TESTS !== '0';
 const LIVE_TX_TIMEOUT_MS = Number(process.env.LIVE_TX_TIMEOUT_MS || '420000');
 const describeMaybe = RUN_LIVE_TESTS && HAS_REQUIRED_ENV ? describe : describe.skip;
-const itWalletMaybe = HAS_CLIENT_KEY ? it : it.skip;
 
 function generateRandomData() {
   const randomSuffix = Math.floor(Math.random() * 9000) + 1000;
@@ -90,16 +89,15 @@ describeMaybe('Agent Registration with IPFS Pin', () => {
     expect(registrationFile.agentURI!.startsWith('ipfs://')).toBe(true);
   });
 
-  itWalletMaybe('should set agent wallet on-chain (requires CLIENT_PRIVATE_KEY)', async () => {
+  it('should set agent wallet on-chain', async () => {
     if (!agent) {
       throw new Error('Agent not initialized from previous test');
     }
-    const secondWalletAddress = privateKeyToAccount(
-      (CLIENT_PRIVATE_KEY.startsWith('0x') ? CLIENT_PRIVATE_KEY : `0x${CLIENT_PRIVATE_KEY}`) as any
-    ).address;
+    const ephemeralKey = `0x${randomBytes(32).toString('hex')}` as `0x${string}`;
+    const secondWalletAddress = privateKeyToAccount(ephemeralKey).address;
     // 1.4.0 behavior: zero address is treated as "unset". Some deployments may set a non-zero default wallet.
     // We only assert that after setWallet (or no-op) the readback equals the intended wallet.
-    const walletTx = await agent.setWallet(secondWalletAddress, { newWalletPrivateKey: CLIENT_PRIVATE_KEY });
+    const walletTx = await agent.setWallet(secondWalletAddress, { newWalletPrivateKey: ephemeralKey });
     // If already set, SDK returns undefined (no-op).
     if (walletTx) {
       await walletTx.waitConfirmed({ timeoutMs: LIVE_TX_TIMEOUT_MS });
