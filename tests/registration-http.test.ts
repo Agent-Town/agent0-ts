@@ -115,7 +115,7 @@ describeMaybe('Agent Registration with HTTP URI', () => {
       `https://api.example.com/a2a/${randomSuffix}.json`,
       `0.${Math.floor(Math.random() * 6) + 30}`
     );
-    // agentWallet flow is tested separately (skipped if CLIENT_PRIVATE_KEY is not set)
+    // agentWallet flow is tested separately.
     agent.setENS(`${testData.ensName}.updated`, `1.${Math.floor(Math.random() * 10)}`);
     agent.setActive(false);
     agent.setX402Support(true);

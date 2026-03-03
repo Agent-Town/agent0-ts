@@ -133,7 +133,7 @@ describeMaybe('Agent Registration with IPFS Pin', () => {
       false // Disable endpoint crawling (2B)
     );
 
-      // agentWallet flow is tested separately (skipped if CLIENT_PRIVATE_KEY is not set)
+      // agentWallet flow is tested separately.
     agent.setENS(`${testData.ensName}.updated`, `1.${Math.floor(Math.random() * 10)}`);
     agent.setActive(false);
     agent.setX402Support(true);
