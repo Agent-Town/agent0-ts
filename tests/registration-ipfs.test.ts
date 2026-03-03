@@ -21,6 +21,7 @@ const HAS_CLIENT_KEY = Boolean(CLIENT_PRIVATE_KEY && CLIENT_PRIVATE_KEY.trim() !
 // Live/integration test (on-chain + IPFS).
 // Default: enabled when env vars are present. Set RUN_LIVE_TESTS=0 to disable.
 const RUN_LIVE_TESTS = process.env.RUN_LIVE_TESTS !== '0';
+const LIVE_TX_TIMEOUT_MS = Number(process.env.LIVE_TX_TIMEOUT_MS || '420000');
 const describeMaybe = RUN_LIVE_TESTS && HAS_REQUIRED_ENV ? describe : describe.skip;
 const itWalletMaybe = HAS_CLIENT_KEY ? it : it.skip;
 
@@ -81,7 +82,7 @@ describeMaybe('Agent Registration with IPFS Pin', () => {
     agent.setTrust(testData.reputation, testData.cryptoEconomic, testData.teeAttestation);
 
     const regTx = await agent.registerIPFS();
-    const { result: registrationFile } = await regTx.waitConfirmed({ timeoutMs: 180_000 });
+    const { result: registrationFile } = await regTx.waitConfirmed({ timeoutMs: LIVE_TX_TIMEOUT_MS });
     agentId = registrationFile.agentId!;
 
     expect(agentId).toBeTruthy();
@@ -101,7 +102,7 @@ describeMaybe('Agent Registration with IPFS Pin', () => {
     const walletTx = await agent.setWallet(secondWalletAddress, { newWalletPrivateKey: CLIENT_PRIVATE_KEY });
     // If already set, SDK returns undefined (no-op).
     if (walletTx) {
-      await walletTx.waitConfirmed({ timeoutMs: 180_000 });
+      await walletTx.waitConfirmed({ timeoutMs: LIVE_TX_TIMEOUT_MS });
     }
     const after = await agent.getWallet();
     expect(after).toBe(secondWalletAddress);
@@ -148,10 +149,10 @@ describeMaybe('Agent Registration with IPFS Pin', () => {
     });
 
     const updateTx = await agent.registerIPFS();
-    const { result: updatedRegistrationFile } = await updateTx.waitConfirmed({ timeoutMs: 180_000 });
+    const { result: updatedRegistrationFile } = await updateTx.waitConfirmed({ timeoutMs: LIVE_TX_TIMEOUT_MS });
     expect(updatedRegistrationFile.agentURI).toBeTruthy();
     },
-    180000
+    LIVE_TX_TIMEOUT_MS + 60000
   );
 
   it('should reload and verify updated agent', async () => {
@@ -165,4 +166,3 @@ describeMaybe('Agent Registration with IPFS Pin', () => {
     expect(reloadedAgent.getRegistrationFile().x402support).toBe(true);
   });
 });
-
