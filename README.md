@@ -649,6 +649,7 @@ Complete working examples are available in the `examples/` directory:
 - `search-agents.ts` - Agent search and discovery
 - `transfer-agent.ts` - Agent ownership transfer
 - `skill-md-publish-openclaw-verify.ts` - Publish `SKILL.md`, anchor URI+SHA-256 on-chain, verify and install in an OpenClaw-style agent flow
+- `skill-md-portable-installer-example.ts` - Publish installer+target `SKILL.md`, bootstrap verification tooling, and install/export for Codex, Claude Code, ChatGPT, and Claude
 
 ## Documentation
 
