@@ -181,7 +181,7 @@ export class FeedbackManager {
           ...(tag2OnChain ? { tag2: tag2OnChain } : {}),
           ...(endpointOnChain ? { endpoint: endpointOnChain } : {}),
 
-          // Rich/off-chain fields (capability/name/skill/task/context/proofOfPayment/etc)
+          // Rich/off-chain fields (mcpTool, a2aSkills, a2aContextId, a2aTaskId, proofOfPayment, etc.)
           ...(feedbackFile || {}),
         };
 
@@ -243,21 +243,11 @@ export class FeedbackManager {
           ? (feedbackFile.proofOfPayment as Record<string, any>)
           : undefined;
 
-      // Spec fields: use from input or map legacy keys for backward compat
-      const mcpTool = feedbackFile?.mcpTool ?? (typeof feedbackFile?.capability === 'string' ? feedbackFile.capability : undefined);
-      const a2aSkills = Array.isArray(feedbackFile?.a2aSkills)
-        ? feedbackFile.a2aSkills
-        : typeof feedbackFile?.skill === 'string'
-          ? [feedbackFile.skill]
-          : undefined;
-      const a2aContextId =
-        feedbackFile?.a2aContextId ??
-        (typeof feedbackFile?.context === 'string'
-          ? feedbackFile.context
-          : feedbackFile?.context && typeof feedbackFile.context === 'object' && 'id' in feedbackFile.context
-            ? (feedbackFile.context as { id?: string }).id
-            : undefined);
-      const a2aTaskId = feedbackFile?.a2aTaskId ?? (typeof feedbackFile?.task === 'string' ? feedbackFile.task : undefined);
+      // Spec-aligned fields only (no legacy mapping)
+      const mcpTool = feedbackFile?.mcpTool;
+      const a2aSkills = Array.isArray(feedbackFile?.a2aSkills) ? feedbackFile.a2aSkills : undefined;
+      const a2aContextId = feedbackFile?.a2aContextId;
+      const a2aTaskId = feedbackFile?.a2aTaskId;
       const oasfSkills = Array.isArray(feedbackFile?.oasfSkills) ? feedbackFile.oasfSkills : undefined;
       const oasfDomains = Array.isArray(feedbackFile?.oasfDomains) ? feedbackFile.oasfDomains : undefined;
 

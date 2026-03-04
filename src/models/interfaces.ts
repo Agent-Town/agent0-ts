@@ -144,13 +144,6 @@ export interface FeedbackFileInput {
   oasfSkills?: string[];
   oasfDomains?: string[];
 
-  // Legacy keys (mapped to spec when giving feedback)
-  capability?: string;
-  context?: Record<string, any>;
-  name?: string;
-  skill?: string;
-  task?: string;
-
   [key: string]: any;
 }
 
