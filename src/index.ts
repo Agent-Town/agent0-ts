@@ -11,7 +11,12 @@ export * from './utils/index.js';
 
 // Export core classes
 export { SDK } from './core/sdk.js';
-export type { SDKConfig } from './core/sdk.js';
+export type {
+  SDKConfig,
+  BrowserPrivateKeyPolicy,
+  MetadataUpdatePolicy,
+  RegistrationIntegrityConfig,
+} from './core/sdk.js';
 export { Agent } from './core/agent.js';
 export { ViemChainClient } from './core/viem-chain-client.js';
 export type { ChainClient, TransactionOptions } from './core/chain-client.js';

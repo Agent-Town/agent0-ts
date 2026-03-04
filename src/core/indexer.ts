@@ -32,7 +32,8 @@ export class AgentIndexer {
   constructor(
     private subgraphClient?: SubgraphClient,
     private subgraphUrlOverrides?: Record<ChainId, string>,
-    private readonly defaultChainId?: ChainId
+    private readonly defaultChainId?: ChainId,
+    private readonly outboundUrlValidator?: (url: string, source: string) => void
   ) {}
 
   /**
@@ -340,6 +341,7 @@ export class AgentIndexer {
 
     if (uri.startsWith('http://') || uri.startsWith('https://')) {
       try {
+        this.outboundUrlValidator?.(uri, 'indexer-registration-read');
         return await fetchJson(uri);
       } catch {
         return null;

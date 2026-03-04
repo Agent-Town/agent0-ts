@@ -13,6 +13,8 @@ export interface A2aCapabilities {
   a2aSkills?: string[];
 }
 
+export type OutboundUrlValidator = (url: string, source: string) => void | Promise<void>;
+
 /**
  * Helper to create JSON-RPC request
  */
@@ -30,9 +32,17 @@ function createJsonRpcRequest(method: string, params?: Record<string, unknown>, 
  */
 export class EndpointCrawler {
   private timeout: number;
+  private urlValidator?: OutboundUrlValidator;
 
-  constructor(timeout: number = 5000) {
+  constructor(timeout: number = 5000, urlValidator?: OutboundUrlValidator) {
     this.timeout = timeout;
+    this.urlValidator = urlValidator;
+  }
+
+  private async _validateUrl(url: string, source: string): Promise<void> {
+    if (this.urlValidator) {
+      await this.urlValidator(url, source);
+    }
   }
 
   /**
@@ -54,6 +64,7 @@ export class EndpointCrawler {
     // Fallback to static agentcard.json
     try {
       const agentcardUrl = `${endpoint}/agentcard.json`;
+      await this._validateUrl(agentcardUrl, 'endpoint-crawler-mcp-fallback');
       const response = await fetch(agentcardUrl, {
         signal: AbortSignal.timeout(this.timeout),
         redirect: 'follow',
@@ -151,6 +162,7 @@ export class EndpointCrawler {
    */
   private async _jsonRpcCall(url: string, method: string, params?: Record<string, unknown>): Promise<unknown> {
     try {
+      await this._validateUrl(url, 'endpoint-crawler-jsonrpc');
       const payload = createJsonRpcRequest(method, params);
       const response = await fetch(url, {
         method: 'POST',
@@ -238,6 +250,7 @@ export class EndpointCrawler {
 
       for (const agentcardUrl of agentcardUrls) {
         try {
+          await this._validateUrl(agentcardUrl, 'endpoint-crawler-a2a');
           const response = await fetch(agentcardUrl, {
             signal: AbortSignal.timeout(this.timeout),
             redirect: 'follow',
@@ -357,4 +370,3 @@ export class EndpointCrawler {
     return result;
   }
 }
-
