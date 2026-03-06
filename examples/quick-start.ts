@@ -1,6 +1,6 @@
 /**
  * Quick Start Example
- * 
+ *
  * This example demonstrates how to:
  * 1. Initialize the SDK
  * 2. Create a new agent
@@ -20,7 +20,9 @@ async function main() {
     throw new Error('RPC_URL is required for this example');
   }
   if (!privateKey || privateKey.trim() === '') {
-    throw new Error('PRIVATE_KEY (or AGENT_PRIVATE_KEY) is required for this example (registration is a tx)');
+    throw new Error(
+      'PRIVATE_KEY (or AGENT_PRIVATE_KEY) is required for this example (registration is a tx)'
+    );
   }
   if (!pinataJwt || pinataJwt.trim() === '') {
     throw new Error('PINATA_JWT is required for this example (registerIPFS uses pinata)');
@@ -31,7 +33,7 @@ async function main() {
     chainId: 11155111, // Ethereum Sepolia
     rpcUrl,
     privateKey,
-    ipfs: 'pinata', // or 'filecoinPin' or 'node'
+    ipfs: 'pinata', // or 'node'
     pinataJwt, // Required if ipfs='pinata'
   });
 
@@ -81,4 +83,3 @@ async function main() {
 }
 
 main().catch(console.error);
-

@@ -14,6 +14,7 @@ import type { SDK } from './sdk.js';
 import { EndpointCrawler } from './endpoint-crawler.js';
 import { parseAgentId } from '../utils/id-format.js';
 import { TIMEOUTS } from '../utils/constants.js';
+import { assertHttpAgentUri, assertLoadableAgentUri } from '../utils/index.js';
 import { validateSkill, validateDomain } from './oasf-validator.js';
 import type { ChainReceipt } from './chain-client.js';
 import { IDENTITY_REGISTRY_ABI } from './contracts.js';
@@ -36,15 +37,74 @@ export class Agent {
   }
 
   private async _waitForTransactionWithRetry(hash: `0x${string}`, timeoutMs: number): Promise<ChainReceipt> {
+    let receipt: ChainReceipt;
     try {
-      return await this.sdk.chainClient.waitForTransaction({ hash, timeoutMs });
+      receipt = await this.sdk.chainClient.waitForTransaction({ hash, timeoutMs });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (message.toLowerCase().includes('timed out')) {
-        return await this.sdk.chainClient.waitForTransaction({ hash, timeoutMs: timeoutMs * 2 });
+        receipt = await this.sdk.chainClient.waitForTransaction({ hash, timeoutMs: timeoutMs * 2 });
+      } else {
+        throw err;
       }
-      throw err;
     }
+
+    if (receipt.status === 'reverted') {
+      throw new Error(`Transaction reverted: ${hash}`);
+    }
+
+    return receipt;
+  }
+
+  private _markRegistrationStateCommitted(): void {
+    this._lastRegisteredWallet = this.walletAddress;
+    this._lastRegisteredEns = this.ensEndpoint;
+  }
+
+  private async _updateDirtyMetadataOnChain(): Promise<Set<string>> {
+    const updatedKeys = new Set<string>();
+    const metadataEntries = this._collectMetadataForRegistration();
+    const { tokenId } = parseAgentId(this.registrationFile.agentId!);
+    const identityRegistryAddress = this.sdk.identityRegistryAddress();
+
+    for (const entry of metadataEntries) {
+      if (!this._dirtyMetadata.has(entry.metadataKey)) {
+        continue;
+      }
+
+      try {
+        const txHash: `0x${string}` = await this.sdk.chainClient.writeContract({
+          address: identityRegistryAddress,
+          abi: IDENTITY_REGISTRY_ABI,
+          functionName: 'setMetadata',
+          args: [BigInt(tokenId), entry.metadataKey, entry.metadataValue],
+        });
+
+        await this._waitForTransactionWithRetry(txHash, TIMEOUTS.TRANSACTION_WAIT);
+        updatedKeys.add(entry.metadataKey);
+      } catch {
+        // Preserve dirty metadata for later retries and stop here.
+        // Additional metadata writes would consume later nonces and typically
+        // compound the delay after a timeout or revert.
+        break;
+      }
+    }
+
+    return updatedKeys;
+  }
+
+  private async _finalizeUriUpdate(agentURI: URI): Promise<RegistrationFile> {
+    if (this._dirtyMetadata.size > 0) {
+      const updatedKeys = await this._updateDirtyMetadataOnChain();
+      for (const key of updatedKeys) {
+        this._dirtyMetadata.delete(key);
+      }
+    }
+
+    this._markRegistrationStateCommitted();
+    this.registrationFile.agentURI = agentURI;
+    this.registrationFile.updatedAt = Math.floor(Date.now() / 1000);
+    return this.registrationFile;
   }
 
   // Read-only properties
@@ -840,23 +900,7 @@ export class Agent {
       });
 
       return new TransactionHandle(txHash as Hex, this.sdk.chainClient, async () => {
-        // Best-effort metadata updates (may involve additional txs)
-        if (this._dirtyMetadata.size > 0) {
-          try {
-            await this._updateMetadataOnChain();
-          } catch {
-            // Preserve previous behavior: ignore failures/timeouts and continue.
-          }
-        }
-
-        // Clear dirty flags
-        this._lastRegisteredWallet = this.walletAddress;
-        this._lastRegisteredEns = this.ensEndpoint;
-        this._dirtyMetadata.clear();
-
-        this.registrationFile.agentURI = `ipfs://${ipfsCid}`;
-        this.registrationFile.updatedAt = Math.floor(Date.now() / 1000);
-        return this.registrationFile;
+        return await this._finalizeUriUpdate(`ipfs://${ipfsCid}`);
       });
     } else {
       // First time registration: tx1 = register (no URI), then (after confirmation) upload + tx2 = setAgentURI
@@ -897,11 +941,8 @@ export class Agent {
 
         await this._waitForTransactionWithRetry(txHash2, TIMEOUTS.TRANSACTION_WAIT);
 
-        // Clear dirty flags
-        this._lastRegisteredWallet = this.walletAddress;
-        this._lastRegisteredEns = this.ensEndpoint;
+        this._markRegistrationStateCommitted();
         this._dirtyMetadata.clear();
-
         this.registrationFile.agentURI = `ipfs://${ipfsCid}`;
         this.registrationFile.updatedAt = Math.floor(Date.now() / 1000);
         return this.registrationFile;
@@ -917,6 +958,7 @@ export class Agent {
     if (!this.registrationFile.name || !this.registrationFile.description) {
       throw new Error('Agent must have name and description before registration');
     }
+    assertHttpAgentUri(agentUri, 'HTTP agent URI');
 
     if (this.registrationFile.agentId) {
       // Agent already registered - update agent URI
@@ -938,6 +980,7 @@ export class Agent {
         this.registrationFile.agentId = `${chainId}:${agentId}`;
         this.registrationFile.agentURI = agentUri;
         this.registrationFile.updatedAt = Math.floor(Date.now() / 1000);
+        this._markRegistrationStateCommitted();
         this._dirtyMetadata.clear();
         return this.registrationFile;
       });
@@ -951,6 +994,7 @@ export class Agent {
     if (!this.registrationFile.agentId) {
       throw new Error('Agent must be registered before setting URI');
     }
+    assertLoadableAgentUri(agentURI, 'agent URI');
 
     const { tokenId } = parseAgentId(this.registrationFile.agentId);
     const identityRegistryAddress = this.sdk.identityRegistryAddress();
@@ -961,9 +1005,7 @@ export class Agent {
       args: [BigInt(tokenId), agentURI],
     });
     return new TransactionHandle(txHash as Hex, this.sdk.chainClient, async () => {
-      this.registrationFile.agentURI = agentURI;
-      this.registrationFile.updatedAt = Math.floor(Date.now() / 1000);
-      return this.registrationFile;
+      return await this._finalizeUriUpdate(agentURI);
     });
   }
 
@@ -978,7 +1020,7 @@ export class Agent {
     }
 
     const { tokenId } = parseAgentId(this.registrationFile.agentId);
-    const currentOwner = await this.sdk.chainClient.ensureAddress();
+    await this.sdk.chainClient.ensureAddress();
 
     // Validate address - normalize to lowercase first
     const normalizedAddress = newOwner.toLowerCase();
@@ -993,18 +1035,24 @@ export class Agent {
 
     // Convert to checksum format
     const checksumAddress = this.sdk.chainClient.toChecksumAddress(normalizedAddress);
+    const identityRegistryAddress = this.sdk.identityRegistryAddress();
+    const actualOwner = await this.sdk.chainClient.readContract<Address>({
+      address: identityRegistryAddress,
+      abi: IDENTITY_REGISTRY_ABI,
+      functionName: 'ownerOf',
+      args: [BigInt(tokenId)],
+    });
 
     // Validate not transferring to self
-    if (checksumAddress.toLowerCase() === currentOwner.toLowerCase()) {
+    if (checksumAddress.toLowerCase() === actualOwner.toLowerCase()) {
       throw new Error('Cannot transfer agent to yourself');
     }
 
-    const identityRegistryAddress = this.sdk.identityRegistryAddress();
     const txHash = await this.sdk.chainClient.writeContract({
       address: identityRegistryAddress,
       abi: IDENTITY_REGISTRY_ABI,
       functionName: 'transferFrom',
-      args: [currentOwner, checksumAddress, BigInt(tokenId)],
+      args: [actualOwner, checksumAddress, BigInt(tokenId)],
     });
     return new TransactionHandle(txHash as Hex, this.sdk.chainClient, async () => {
       // transfer resets agentWallet on-chain; reflect that locally after confirmation
@@ -1013,7 +1061,7 @@ export class Agent {
       this.registrationFile.updatedAt = Math.floor(Date.now() / 1000);
       return {
         txHash,
-        from: currentOwner,
+        from: actualOwner,
         to: checksumAddress,
         agentId: this.registrationFile.agentId!,
       };
@@ -1085,33 +1133,6 @@ export class Agent {
     this.registrationFile.updatedAt = Math.floor(Date.now() / 1000);
 
     return this.registrationFile;
-  }
-
-  private async _updateMetadataOnChain(): Promise<void> {
-    const metadataEntries = this._collectMetadataForRegistration();
-    const { tokenId } = parseAgentId(this.registrationFile.agentId!);
-    const identityRegistryAddress = this.sdk.identityRegistryAddress();
-
-    // Update metadata one by one (like Python SDK)
-    // Only send transactions for dirty (changed) metadata keys
-    for (const entry of metadataEntries) {
-      if (this._dirtyMetadata.has(entry.metadataKey)) {
-        const txHash: `0x${string}` = await this.sdk.chainClient.writeContract({
-          address: identityRegistryAddress,
-          abi: IDENTITY_REGISTRY_ABI,
-          functionName: 'setMetadata',
-          args: [BigInt(tokenId), entry.metadataKey, entry.metadataValue],
-        });
-
-        // Wait with 30 second timeout (like Python SDK)
-        // If timeout, log warning but continue - transaction was sent and will eventually confirm
-        try {
-          await this._waitForTransactionWithRetry(txHash, TIMEOUTS.TRANSACTION_WAIT);
-        } catch (error) {
-          // Transaction was sent and will eventually confirm - continue silently
-        }
-      }
-    }
   }
 
   private _collectMetadataForRegistration(): Array<{ metadataKey: string; metadataValue: Hex }> {
@@ -1190,4 +1211,3 @@ export class Agent {
     throw new Error('Could not extract agent ID from transaction receipt - no Registered or Transfer event found');
   }
 }
-

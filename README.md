@@ -73,8 +73,8 @@ const sdk = new SDK({
   chainId: 11155111, // Ethereum Sepolia testnet (use 1 for Ethereum Mainnet)
   rpcUrl: process.env.RPC_URL!,
   privateKey: process.env.PRIVATE_KEY ?? process.env.AGENT_PRIVATE_KEY, // Optional: for write operations
-  ipfs: 'pinata', // Options: 'pinata', 'filecoinPin', 'node'
-  pinataJwt: process.env.PINATA_JWT // For Pinata
+  ipfs: 'pinata', // Options: 'pinata', 'node'
+  pinataJwt: process.env.PINATA_JWT, // For Pinata
   // Subgraph URL auto-defaults from DEFAULT_SUBGRAPH_URLS
 });
 ```
@@ -190,19 +190,20 @@ const agentSummary = await sdk.getAgent('11155111:123'); // explicit chainId:age
 // Search across multiple chains
 const results = await sdk.searchAgents({
   active: true,
-  chains: [1, 11155111, 137] // Ethereum Mainnet, Ethereum Sepolia, Polygon Mainnet
+  chains: [1, 11155111, 137], // Ethereum Mainnet, Ethereum Sepolia, Polygon Mainnet
 });
 
 // Search all configured chains
 const allResults = await sdk.searchAgents({
   active: true,
-  chains: 'all' // Searches all configured chains
+  chains: 'all', // Searches all configured chains
 });
 
 // Search agents by feedback-derived reputation across chains (unified search)
-const reputationResults = await sdk.searchAgents(
-  { chains: [1, 11155111, 137], feedback: { minValue: 80, includeRevoked: false } }
-);
+const reputationResults = await sdk.searchAgents({
+  chains: [1, 11155111, 137],
+  feedback: { minValue: 80, includeRevoked: false },
+});
 
 // Get agent from specific chain
 const agent = await sdk.getAgent('1:123'); // Ethereum Mainnet
@@ -261,13 +262,13 @@ console.log(`Average value: ${summary.averageValue}`);
 ## IPFS Configuration Options
 
 ```typescript
-// Option 1: Filecoin Pin (free for ERC-8004 agents)
+// Option 1: Pinata
 const sdk = new SDK({
   chainId: 11155111,
   rpcUrl: '...',
-  signer: privateKey,
-  ipfs: 'filecoinPin',
-  filecoinPrivateKey: 'your-filecoin-private-key'
+  privateKey: '0x...',
+  ipfs: 'pinata',
+  pinataJwt: process.env.PINATA_JWT!,
 });
 
 // Option 2: IPFS Node
@@ -276,7 +277,7 @@ const sdk = new SDK({
   rpcUrl: '...',
   signer: privateKey,
   ipfs: 'node',
-  ipfsNodeUrl: 'https://ipfs.infura.io:5001'
+  ipfsNodeUrl: 'https://ipfs.infura.io:5001',
 });
 
 // Option 3: Pinata (free for ERC-8004 agents)
@@ -285,7 +286,7 @@ const sdk = new SDK({
   rpcUrl: '...',
   signer: privateKey,
   ipfs: 'pinata',
-  pinataJwt: 'your-pinata-jwt-token'
+  pinataJwt: 'your-pinata-jwt-token',
 });
 
 // Option 4: HTTP registration (no IPFS)
@@ -310,15 +311,15 @@ Use `chainId:agentId` format to specify which chain an agent is on:
 
 ```typescript
 // Get agent from specific chain
-const agent = await sdk.getAgent('1:1234');  // Ethereum Mainnet
+const agent = await sdk.getAgent('1:1234'); // Ethereum Mainnet
 
 // Search feedback for agent on specific chain
-const feedbacks = await sdk.searchFeedback({ agentId: '1:1234' });  // Ethereum Mainnet
-const feedbacksDefault = await sdk.searchFeedback({ agentId: '11155111:1234' });  // Default chain
+const feedbacks = await sdk.searchFeedback({ agentId: '1:1234' }); // Ethereum Mainnet
+const feedbacksDefault = await sdk.searchFeedback({ agentId: '11155111:1234' }); // Default chain
 
 // Get reputation summary for agent on specific chain
-const summary = await sdk.getReputationSummary('1:1234');  // Ethereum Mainnet
-const summaryDefault = await sdk.getReputationSummary('1234');  // Uses default chain
+const summary = await sdk.getReputationSummary('1:1234'); // Ethereum Mainnet
+const summaryDefault = await sdk.getReputationSummary('1234'); // Uses default chain
 ```
 
 ### Multi-Chain Search
@@ -329,24 +330,26 @@ Search across multiple chains simultaneously:
 // Search across multiple chains
 const result = await sdk.searchAgents({
   active: true,
-  chains: [1, 8453, 11155111, 84532, 137]  // Ethereum Mainnet, Base Mainnet, Ethereum Sepolia, Base Sepolia, Polygon Mainnet
+  chains: [1, 8453, 11155111, 84532, 137], // Ethereum Mainnet, Base Mainnet, Ethereum Sepolia, Base Sepolia, Polygon Mainnet
 });
 
 // Search all configured chains
 const allChainsResult = await sdk.searchAgents({
   active: true,
-  chains: 'all'  // Searches all configured chains
+  chains: 'all', // Searches all configured chains
 });
 
 // Multi-chain feedback-derived reputation search (unified search)
-const reputationResult = await sdk.searchAgents(
-  { chains: [1, 8453, 11155111, 84532, 137], feedback: { minValue: 80, includeRevoked: false } }
-);
+const reputationResult = await sdk.searchAgents({
+  chains: [1, 8453, 11155111, 84532, 137],
+  feedback: { minValue: 80, includeRevoked: false },
+});
 
 // Search all chains for agents with reputation (unified search)
-const allChainsReputation = await sdk.searchAgents(
-  { chains: 'all', feedback: { minValue: 80, includeRevoked: false } }
-);
+const allChainsReputation = await sdk.searchAgents({
+  chains: 'all',
+  feedback: { minValue: 80, includeRevoked: false },
+});
 
 // Pagination has been removed; multi-chain results are returned as a flat list.
 ```
@@ -357,15 +360,15 @@ When you initialize the SDK, you specify a default chain. Agent IDs without a `c
 
 ```typescript
 const sdk = new SDK({
-  chainId: 11155111,  // Default chain
-  rpcUrl: 'https://eth-sepolia.g.alchemy.com/v2/YOUR_KEY'
+  chainId: 11155111, // Default chain
+  rpcUrl: 'https://eth-sepolia.g.alchemy.com/v2/YOUR_KEY',
 });
 
 // Uses default chain (11155111)
-const agent = await sdk.getAgent('1234');  // Equivalent to "11155111:1234"
+const agent = await sdk.getAgent('1234'); // Equivalent to "11155111:1234"
 
 // Explicitly specify different chain
-const agent = await sdk.getAgent('1:1234');  // Ethereum Mainnet
+const agent = await sdk.getAgent('1:1234'); // Ethereum Mainnet
 ```
 
 ## OASF Taxonomies
@@ -415,6 +418,7 @@ OASF skills and domains appear in your agent's registration file:
 ### Taxonomy Files
 
 The SDK includes complete OASF v0.8.0 taxonomy files:
+
 - **Skills**: `src/taxonomies/all_skills.json` (136 skills)
 - **Domains**: `src/taxonomies/all_domains.json` (204 domains)
 
@@ -449,17 +453,17 @@ export interface FeedbackFilters {
 }
 ```
 
-| Field | Semantics |
-| --- | --- |
-| `hasFeedback` / `hasNoFeedback` | Filter by whether the agent has any feedback |
-| `includeRevoked` | Include revoked feedback entries in the pool used for filtering |
-| `minValue` / `maxValue` | Threshold on **average value** over feedback matching the other feedback constraints (inclusive) |
-| `minCount` / `maxCount` | Threshold on **count** over feedback matching the other feedback constraints (inclusive) |
-| `fromReviewers` | Only consider feedback from these reviewer wallets |
-| `endpoint` | Only consider feedback whose `endpoint` contains this substring |
-| `hasResponse` | Only consider feedback that has at least one response (if supported) |
-| `tag1` / `tag2` | Only consider feedback matching tag1/tag2 |
-| `tag` | Shorthand: match either tag1 OR tag2 |
+| Field                           | Semantics                                                                                        |
+| ------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `hasFeedback` / `hasNoFeedback` | Filter by whether the agent has any feedback                                                     |
+| `includeRevoked`                | Include revoked feedback entries in the pool used for filtering                                  |
+| `minValue` / `maxValue`         | Threshold on **average value** over feedback matching the other feedback constraints (inclusive) |
+| `minCount` / `maxCount`         | Threshold on **count** over feedback matching the other feedback constraints (inclusive)         |
+| `fromReviewers`                 | Only consider feedback from these reviewer wallets                                               |
+| `endpoint`                      | Only consider feedback whose `endpoint` contains this substring                                  |
+| `hasResponse`                   | Only consider feedback that has at least one response (if supported)                             |
+| `tag1` / `tag2`                 | Only consider feedback matching tag1/tag2                                                        |
+| `tag`                           | Shorthand: match either tag1 OR tag2                                                             |
 
 ### `SearchFilters`
 
@@ -517,17 +521,17 @@ export interface SearchFilters {
 
 ```ts
 export interface SearchOptions {
-  sort?: string[];           // e.g. ["averageValue:desc", "updatedAt:desc"]
+  sort?: string[]; // e.g. ["averageValue:desc", "updatedAt:desc"]
   semanticMinScore?: number; // keyword searches only
-  semanticTopK?: number;     // keyword searches only
+  semanticTopK?: number; // keyword searches only
 }
 ```
 
-| Field | Semantics |
-| --- | --- |
-| `sort` | List of sort keys: `"field:asc"` or `"field:desc"` |
-| `semanticMinScore` | Minimum semantic score cutoff (keyword searches only) |
-| `semanticTopK` | Limits semantic prefilter size (semantic endpoint has no cursor) |
+| Field              | Semantics                                                        |
+| ------------------ | ---------------------------------------------------------------- |
+| `sort`             | List of sort keys: `"field:asc"` or `"field:desc"`               |
+| `semanticMinScore` | Minimum semantic score cutoff (keyword searches only)            |
+| `semanticTopK`     | Limits semantic prefilter size (semantic endpoint has no cursor) |
 
 ### `AgentSummary` (returned items)
 

@@ -462,6 +462,41 @@ export class AgentIndexer {
     return { idsByChain: allowByChain, statsById: Object.fromEntries(Object.entries(finalStats).map(([k, v]) => [k, v])) };
   }
 
+  private async _resolveBaseCandidatesForFeedback(
+    filters: SearchFilters,
+    chains: ChainId[],
+    orderBy: string,
+    orderDirection: 'asc' | 'desc',
+    agentIdsByChain?: Record<number, string[]>,
+    metadataIdsByChain?: Record<number, string[]>
+  ): Promise<Record<number, string[]>> {
+    const filtersWithoutFeedback: SearchFilters = { ...filters, feedback: undefined };
+    const candidatesByChain: Record<number, string[]> = {};
+
+    await Promise.all(
+      chains.map(async (chainId) => {
+        const client =
+          this.defaultChainId !== undefined && chainId === this.defaultChainId ? this.subgraphClient : this._getSubgraphClientForChain(chainId);
+        if (!client) {
+          candidatesByChain[chainId] = [];
+          return;
+        }
+
+        const ids = this._intersectIds(agentIdsByChain?.[chainId], metadataIdsByChain?.[chainId]);
+        if (ids && ids.length === 0) {
+          candidatesByChain[chainId] = [];
+          return;
+        }
+
+        const where = this._buildWhereV2(filtersWithoutFeedback, ids);
+        const items = await this._fetchAllAgentsV2(client, where, orderBy, orderDirection);
+        candidatesByChain[chainId] = items.map((item) => item.agentId);
+      })
+    );
+
+    return candidatesByChain;
+  }
+
   private async _searchUnifiedNoKeyword(
     filters: SearchFilters,
     options: SearchOptions
@@ -477,19 +512,43 @@ export class AgentIndexer {
 
     const agentIdsByChain = this._normalizeAgentIds(filters, chains);
     const metadataIdsByChain = await this._prefilterByMetadata(filters, chains);
+    const orderBy = ['createdAt', 'updatedAt', 'name', 'chainId', 'lastActivity', 'totalFeedback'].includes(field)
+      ? (field === 'feedbackCount' ? 'totalFeedback' : field)
+      : 'updatedAt';
+    const orderDirection = direction;
     const candidateForFeedback: Record<number, string[]> = {};
     for (const c of chains) {
       const ids = this._intersectIds(agentIdsByChain?.[c], metadataIdsByChain?.[c]);
       if (ids && ids.length > 0) candidateForFeedback[c] = ids;
     }
-    const feedbackPrefilter = await this._prefilterByFeedback(filters, chains, Object.keys(candidateForFeedback).length > 0 ? candidateForFeedback : undefined);
+
+    let feedbackCandidates = Object.keys(candidateForFeedback).length > 0 ? candidateForFeedback : undefined;
+    const feedbackHasThreshold =
+      filters.feedback?.minCount !== undefined ||
+      filters.feedback?.maxCount !== undefined ||
+      filters.feedback?.minValue !== undefined ||
+      filters.feedback?.maxValue !== undefined;
+    const feedbackHasConstraint =
+      filters.feedback?.hasResponse === true ||
+      (filters.feedback?.fromReviewers?.length ?? 0) > 0 ||
+      Boolean(filters.feedback?.endpoint) ||
+      Boolean(filters.feedback?.tag) ||
+      Boolean(filters.feedback?.tag1) ||
+      Boolean(filters.feedback?.tag2);
+    if (filters.feedback?.hasNoFeedback && (feedbackHasThreshold || feedbackHasConstraint) && !feedbackCandidates) {
+      feedbackCandidates = await this._resolveBaseCandidatesForFeedback(
+        filters,
+        chains,
+        orderBy,
+        orderDirection,
+        agentIdsByChain,
+        metadataIdsByChain
+      );
+    }
+
+    const feedbackPrefilter = await this._prefilterByFeedback(filters, chains, feedbackCandidates);
     const feedbackIdsByChain = feedbackPrefilter.idsByChain;
     const feedbackStatsById = feedbackPrefilter.statsById || {};
-
-    const orderBy = ['createdAt', 'updatedAt', 'name', 'chainId', 'lastActivity', 'totalFeedback'].includes(field)
-      ? (field === 'feedbackCount' ? 'totalFeedback' : field)
-      : 'updatedAt';
-    const orderDirection = direction;
 
     const fetchChain = async (chainId: ChainId): Promise<{ chainId: ChainId; status: 'success' | 'error' | 'unavailable'; items: AgentSummary[] }> => {
       try {
@@ -547,11 +606,18 @@ export class AgentIndexer {
     const allowedChains = new Set(chains);
     const filtered = results.filter((r) => allowedChains.has(r.chainId));
 
+    const agentIdsByChain = this._normalizeAgentIds(filters, chains);
     const byChain: Record<number, string[]> = {};
     const scoreById: Record<string, number> = {};
     for (const r of filtered) {
       (byChain[r.chainId] ||= []).push(r.agentId);
       scoreById[r.agentId] = r.score;
+    }
+
+    if (agentIdsByChain) {
+      for (const chainId of Object.keys(byChain).map(Number)) {
+        byChain[chainId] = this._intersectIds(byChain[chainId], agentIdsByChain[chainId]) || [];
+      }
     }
 
     const metadataIdsByChain = await this._prefilterByMetadata(filters, chains);
@@ -788,4 +854,3 @@ export class AgentIndexer {
    * Unified search lives in `SDK.searchAgents()` with `filters.feedback` and related filter surfaces.
    */
 }
-

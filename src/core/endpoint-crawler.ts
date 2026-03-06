@@ -25,6 +25,10 @@ function createJsonRpcRequest(method: string, params?: Record<string, unknown>, 
   };
 }
 
+function joinUrlPath(baseUrl: string, suffix: string): string {
+  return `${baseUrl.replace(/\/+$/, '')}/${suffix.replace(/^\/+/, '')}`;
+}
+
 /**
  * Crawls MCP and A2A endpoints to fetch capabilities
  */
@@ -53,7 +57,7 @@ export class EndpointCrawler {
 
     // Fallback to static agentcard.json
     try {
-      const agentcardUrl = `${endpoint}/agentcard.json`;
+      const agentcardUrl = joinUrlPath(endpoint, 'agentcard.json');
       const response = await fetch(agentcardUrl, {
         signal: AbortSignal.timeout(this.timeout),
         redirect: 'follow',
@@ -229,11 +233,9 @@ export class EndpointCrawler {
       // Per A2A spec section 5.3, recommended discovery path is /.well-known/agent-card.json
       const agentcardUrls = [
         endpoint, // Try exact URL first (ERC-8004 format: full path to agent card)
-        `${endpoint}/.well-known/agent-card.json`, // Spec-recommended discovery path
-        `${endpoint.replace(/\/$/, '')}/.well-known/agent-card.json`,
-        `${endpoint}/.well-known/agent.json`, // Alternative well-known path
-        `${endpoint.replace(/\/$/, '')}/.well-known/agent.json`,
-        `${endpoint}/agentcard.json`, // Legacy path
+        joinUrlPath(endpoint, '.well-known/agent-card.json'), // Spec-recommended discovery path
+        joinUrlPath(endpoint, '.well-known/agent.json'), // Alternative well-known path
+        joinUrlPath(endpoint, 'agentcard.json'), // Legacy path
       ];
 
       for (const agentcardUrl of agentcardUrls) {
@@ -357,4 +359,3 @@ export class EndpointCrawler {
     return result;
   }
 }
-

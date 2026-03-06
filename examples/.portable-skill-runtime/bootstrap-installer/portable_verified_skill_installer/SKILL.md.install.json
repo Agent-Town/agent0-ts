@@ -1,0 +1,11 @@
+{
+  "installedAt": "2026-03-03T02:10:22.073Z",
+  "runtime": "codex",
+  "skillAgentId": "11155111:1524",
+  "tokenUri": "ipfs://bafkreid4dsrdiecsiyb2lviezvdi5sbf6lnu3acx5ettqpkt6yj544byam",
+  "sourceUri": "ipfs://bafkreibsrxpgmzsiyt5n65ajsvgq3c36ztath32wl2hmyhwvxxadqszz2i",
+  "expectedHash": "0x328dde666648c4fadf7409954d0d8b7eccc133ef565e8ecc1ed5bdc0384b39d2",
+  "computedHash": "0x328dde666648c4fadf7409954d0d8b7eccc133ef565e8ecc1ed5bdc0384b39d2",
+  "hashAlgorithm": "sha256",
+  "verified": true
+}

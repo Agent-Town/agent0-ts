@@ -55,7 +55,12 @@ export class TransactionHandle<T> {
     })();
 
     this.memo.set(key, promise);
-    return await promise;
+    try {
+      return await promise;
+    } catch (error) {
+      this.memo.delete(key);
+      throw error;
+    }
   }
 
   /**
@@ -65,5 +70,4 @@ export class TransactionHandle<T> {
     return await this.waitMined(opts);
   }
 }
-
 

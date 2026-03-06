@@ -4,6 +4,8 @@
 
 import { GraphQLClient } from 'graphql-request';
 import type { AgentSummary, SearchFilters } from '../models/interfaces.js';
+import { IPFS_GATEWAYS, TIMEOUTS } from '../utils/constants.js';
+import { firstSuccessful } from '../utils/index.js';
 import { normalizeAddress } from '../utils/validation.js';
 
 export interface SubgraphQueryOptions {
@@ -99,6 +101,7 @@ export type AgentRegistrationFile = {
  */
 export class SubgraphClient {
   private client: GraphQLClient;
+  private readonly feedbackFileCache = new Map<string, Promise<Record<string, unknown> | null>>();
 
   constructor(subgraphUrl: string) {
     this.client = new GraphQLClient(subgraphUrl, {
@@ -161,6 +164,7 @@ export class SubgraphClient {
     if (where.owner_in) supportedWhere.owner_in = where.owner_in;
     if (where.operators_contains) supportedWhere.operators_contains = where.operators_contains;
     if (where.agentURI) supportedWhere.agentURI = where.agentURI;
+    if (where.agentWallet) supportedWhere.agentWallet = where.agentWallet;
     if (where.registrationFile_not !== undefined) supportedWhere.registrationFile_not = where.registrationFile_not;
 
     // Support nested registrationFile filters (pushed to subgraph level)
@@ -615,8 +619,6 @@ export class SubgraphClient {
       if (params.active !== undefined) registrationFileFilters.active = params.active;
       if (params.x402support !== undefined) registrationFileFilters.x402Support = params.x402support;
       if (params.ensContains) registrationFileFilters.ens_contains_nocase = params.ensContains;
-      // agentWallet is stored on the Agent entity (not registrationFile) in the current subgraph schema
-      // so we can't push this filter into registrationFile_ here.
       if (params.hasMCP !== undefined) {
         registrationFileFilters[params.hasMCP ? 'mcpEndpoint_not' : 'mcpEndpoint'] = null;
       }
@@ -628,6 +630,9 @@ export class SubgraphClient {
       if (Object.keys(registrationFileFilters).length > 0) {
         // Python SDK uses "registrationFile_" (with underscore) for nested filters
         whereWithFilters.registrationFile_ = registrationFileFilters;
+      }
+      if (params.walletAddress) {
+        whereWithFilters.agentWallet = normalizeAddress(params.walletAddress);
       }
 
       // Owner filtering (at Agent level, not registrationFile)
@@ -706,74 +711,42 @@ export class SubgraphClient {
     orderBy: string = 'createdAt',
     orderDirection: 'asc' | 'desc' = 'desc'
   ): Promise<any[]> {
-    // Build WHERE clause from params
-    const whereConditions: string[] = [];
-
+    const baseWhere: Record<string, unknown> = {};
     if (params.agents && params.agents.length > 0) {
-      const agentIds = params.agents.map((aid) => `"${aid}"`).join(', ');
-      whereConditions.push(`agent_in: [${agentIds}]`);
+      baseWhere.agent_in = params.agents;
     }
-
     if (params.reviewers && params.reviewers.length > 0) {
-      const reviewers = params.reviewers.map((addr) => `"${addr}"`).join(', ');
-      whereConditions.push(`clientAddress_in: [${reviewers}]`);
+      baseWhere.clientAddress_in = params.reviewers.map((reviewer) => reviewer.toLowerCase());
     }
-
     if (!params.includeRevoked) {
-      whereConditions.push('isRevoked: false');
+      baseWhere.isRevoked = false;
     }
-
-    // Build all non-tag conditions first
-    const nonTagConditions = [...whereConditions];
-
-    // Handle tag filtering separately - it needs to be at the top level
-    let tagFilterCondition: string | null = null;
-    if (params.tags && params.tags.length > 0) {
-      // Tag search: any of the tags must match in tag1 OR tag2
-      // Build complete condition with all filters for each tag alternative
-      const tagWhereItems: string[] = [];
-      for (const tag of params.tags) {
-        // For tag1 match
-        const allConditionsTag1 = [...nonTagConditions, `tag1: "${tag}"`];
-        tagWhereItems.push(`{ ${allConditionsTag1.join(', ')} }`);
-        // For tag2 match
-        const allConditionsTag2 = [...nonTagConditions, `tag2: "${tag}"`];
-        tagWhereItems.push(`{ ${allConditionsTag2.join(', ')} }`);
-      }
-      // Join all tag alternatives
-      tagFilterCondition = tagWhereItems.join(', ');
-    }
-
     if (params.minValue !== undefined) {
-      whereConditions.push(`value_gte: ${params.minValue}`);
+      baseWhere.value_gte = params.minValue;
     }
-
     if (params.maxValue !== undefined) {
-      whereConditions.push(`value_lte: ${params.maxValue}`);
+      baseWhere.value_lte = params.maxValue;
     }
 
-    // Breaking change (1.4.0 / spec-only): legacy flat feedback file fields are not indexed.
-    // The current subgraph schema does not expose FeedbackFile.{capability,skill,task,context,name}.
-    // We therefore do not apply these filters at the subgraph level.
-
-    // Use tag_filter_condition if tags were provided, otherwise use standard where clause
-    let whereClause = '';
-    if (tagFilterCondition) {
-      // tagFilterCondition already contains properly formatted items
-      whereClause = `where: { or: [${tagFilterCondition}] }`;
-    } else if (whereConditions.length > 0) {
-      whereClause = `where: { ${whereConditions.join(', ')} }`;
-    }
+    const where =
+      params.tags && params.tags.length > 0
+        ? {
+            or: params.tags.flatMap((tag) => [
+              { ...baseWhere, tag1: tag },
+              { ...baseWhere, tag2: tag },
+            ]),
+          }
+        : (Object.keys(baseWhere).length > 0 ? baseWhere : null);
 
     const queryWithEndpoint = `
-      {
-        feedbacks(
-          ${whereClause}
-          first: ${first}
-          skip: ${skip}
-          orderBy: ${orderBy}
-          orderDirection: ${orderDirection}
-        ) {
+      query SearchFeedback(
+        $where: Feedback_filter
+        $first: Int!
+        $skip: Int!
+        $orderBy: Feedback_orderBy!
+        $orderDirection: OrderDirection!
+      ) {
+        feedbacks(where: $where, first: $first, skip: $skip, orderBy: $orderBy, orderDirection: $orderDirection) {
           id
           agent { id agentId chainId }
           clientAddress
@@ -810,11 +783,21 @@ export class SubgraphClient {
       }
     `;
 
-    // `endpoint` is an on-chain field in the Jan 2026 deployments, but some older subgraphs may not expose it.
-    // Try a query including `endpoint`, and fall back gracefully if the schema doesn't support it.
+    const variables = {
+      where,
+      first,
+      skip,
+      orderBy,
+      orderDirection,
+    };
+
+    const finalize = async (feedbacks: any[]): Promise<any[]> => {
+      return await this._applyFeedbackFileFilters(feedbacks || [], params);
+    };
+
     try {
-      const result = await this.query<{ feedbacks: any[] }>(queryWithEndpoint);
-      return result.feedbacks || [];
+      const result = await this.query<{ feedbacks: any[] }>(queryWithEndpoint, variables);
+      return await finalize(result.feedbacks || []);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       if (!msg.includes('Cannot query field') || !msg.includes('endpoint')) {
@@ -822,14 +805,14 @@ export class SubgraphClient {
       }
 
       const queryWithoutEndpoint = `
-        {
-          feedbacks(
-            ${whereClause}
-            first: ${first}
-            skip: ${skip}
-            orderBy: ${orderBy}
-            orderDirection: ${orderDirection}
-          ) {
+        query SearchFeedbackWithoutEndpoint(
+          $where: Feedback_filter
+          $first: Int!
+          $skip: Int!
+          $orderBy: Feedback_orderBy!
+          $orderDirection: OrderDirection!
+        ) {
+          feedbacks(where: $where, first: $first, skip: $skip, orderBy: $orderBy, orderDirection: $orderDirection) {
             id
             agent { id agentId chainId }
             clientAddress
@@ -865,9 +848,139 @@ export class SubgraphClient {
         }
       `;
 
-      const result = await this.query<{ feedbacks: any[] }>(queryWithoutEndpoint);
-    return result.feedbacks || [];
+      const result = await this.query<{ feedbacks: any[] }>(queryWithoutEndpoint, variables);
+      return await finalize(result.feedbacks || []);
     }
+  }
+
+  private async _applyFeedbackFileFilters(
+    feedbacks: any[],
+    params: {
+      capabilities?: string[];
+      skills?: string[];
+      tasks?: string[];
+      names?: string[];
+    }
+  ): Promise<any[]> {
+    const needsFeedbackFileFiltering =
+      (params.capabilities?.length ?? 0) > 0 ||
+      (params.skills?.length ?? 0) > 0 ||
+      (params.tasks?.length ?? 0) > 0 ||
+      (params.names?.length ?? 0) > 0;
+
+    if (!needsFeedbackFileFiltering) {
+      return feedbacks;
+    }
+
+    const filtered: any[] = [];
+    for (const feedback of feedbacks) {
+      const feedbackFile = await this._getFeedbackFileForFiltering(feedback);
+      const capability = typeof feedbackFile?.capability === 'string' ? feedbackFile.capability : undefined;
+      const skill = typeof feedbackFile?.skill === 'string' ? feedbackFile.skill : undefined;
+      const task = typeof feedbackFile?.task === 'string' ? feedbackFile.task : undefined;
+      const name = typeof feedbackFile?.name === 'string' ? feedbackFile.name : undefined;
+
+      if (params.capabilities && !params.capabilities.includes(capability || '')) {
+        continue;
+      }
+      if (params.skills && !params.skills.includes(skill || '')) {
+        continue;
+      }
+      if (params.tasks && !params.tasks.includes(task || '')) {
+        continue;
+      }
+      if (params.names && !params.names.includes(name || '')) {
+        continue;
+      }
+
+      if (feedbackFile && (!feedback.feedbackFile || typeof feedback.feedbackFile !== 'object')) {
+        feedback.feedbackFile = feedbackFile;
+      } else if (feedbackFile && typeof feedback.feedbackFile === 'object') {
+        feedback.feedbackFile = { ...feedbackFile, ...feedback.feedbackFile };
+      }
+
+      filtered.push(feedback);
+    }
+
+    return filtered;
+  }
+
+  private async _getFeedbackFileForFiltering(feedback: any): Promise<Record<string, unknown> | null> {
+    const inlineFeedbackFile =
+      feedback.feedbackFile && typeof feedback.feedbackFile === 'object' && !Array.isArray(feedback.feedbackFile)
+        ? (feedback.feedbackFile as Record<string, unknown>)
+        : null;
+
+    if (
+      inlineFeedbackFile &&
+      (typeof inlineFeedbackFile.capability === 'string' ||
+        typeof inlineFeedbackFile.skill === 'string' ||
+        typeof inlineFeedbackFile.task === 'string' ||
+        typeof inlineFeedbackFile.name === 'string')
+    ) {
+      return inlineFeedbackFile;
+    }
+
+    const feedbackUri =
+      typeof feedback.feedbackURI === 'string'
+        ? feedback.feedbackURI
+        : (typeof feedback.feedbackUri === 'string' ? feedback.feedbackUri : undefined);
+    if (!feedbackUri) {
+      return inlineFeedbackFile;
+    }
+
+    const loadedFeedbackFile = await this._loadFeedbackFile(feedbackUri);
+    if (!loadedFeedbackFile) {
+      return inlineFeedbackFile;
+    }
+
+    return inlineFeedbackFile ? { ...loadedFeedbackFile, ...inlineFeedbackFile } : loadedFeedbackFile;
+  }
+
+  private async _loadFeedbackFile(feedbackUri: string): Promise<Record<string, unknown> | null> {
+    const existing = this.feedbackFileCache.get(feedbackUri);
+    if (existing) {
+      return await existing;
+    }
+
+    const promise = (async () => {
+      try {
+        if (feedbackUri.startsWith('ipfs://')) {
+          const cid = feedbackUri.slice(7);
+          const gateways = IPFS_GATEWAYS.map((gateway) => `${gateway}${cid}`);
+          const response = await firstSuccessful(
+            gateways.map(async (gateway) => {
+              const gatewayResponse = await fetch(gateway, {
+                signal: AbortSignal.timeout(TIMEOUTS.IPFS_GATEWAY),
+              });
+              if (!gatewayResponse.ok) {
+                throw new Error(`HTTP ${gatewayResponse.status}`);
+              }
+              return gatewayResponse;
+            }),
+            'Failed to retrieve feedback file from IPFS gateways'
+          );
+          return (await response.json()) as Record<string, unknown>;
+        }
+
+        if (feedbackUri.startsWith('http://') || feedbackUri.startsWith('https://')) {
+          const response = await fetch(feedbackUri, {
+            signal: AbortSignal.timeout(TIMEOUTS.IPFS_GATEWAY),
+          });
+          if (!response.ok) {
+            return null;
+          }
+          return (await response.json()) as Record<string, unknown>;
+        }
+      } catch {
+        return null;
+      }
+
+      return null;
+    })();
+
+    this.feedbackFileCache.set(feedbackUri, promise);
+    return await promise;
   }
 
   /**
@@ -876,4 +989,3 @@ export class SubgraphClient {
    * Unified search lives in `SDK.searchAgents()` with `filters.feedback` and related filter surfaces.
    */
 }
-

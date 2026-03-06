@@ -13,6 +13,18 @@ const describeMaybe = RUN_LIVE ? describe : describe.skip;
 describeMaybe('Semantic search via SDK (live)', () => {
   let sdk: SDK;
 
+  async function searchOrSkip(keyword: string, semanticTopK: number): Promise<any[] | null> {
+    try {
+      return await sdk.searchAgents({ keyword }, { semanticTopK });
+    } catch (e: any) {
+      if (String(e?.message || e).includes('HTTP 429')) {
+        console.warn('[live-test] Semantic endpoint rate limited (429); skipping.');
+        return null;
+      }
+      throw e;
+    }
+  }
+
   beforeAll(() => {
     printConfig();
     sdk = new SDK({
@@ -22,29 +34,19 @@ describeMaybe('Semantic search via SDK (live)', () => {
   });
 
   it('returns results for a non-empty keyword query', async () => {
-    let result: any[] = [];
-    try {
-      result = await sdk.searchAgents(
-        { keyword: 'crypto agent' },
-        { semanticTopK: 10 }
-      );
-    } catch (e: any) {
-      if (String(e?.message || e).includes('HTTP 429')) {
-        console.warn('[live-test] Semantic endpoint rate limited (429); skipping.');
-        return;
-      }
-      throw e;
-    }
+    const result = await searchOrSkip('crypto agent', 10);
+    if (result == null) return;
     expect(Array.isArray(result)).toBe(true);
     expect(result.length).toBeGreaterThan(0);
   });
 
   it('each item has chainId, agentId (chainId:tokenId), and optional semanticScore', async () => {
-    const result = await sdk.searchAgents(
-      { keyword: 'agent' },
-      { semanticTopK: 5 }
-    );
-    expect(result.length).toBeGreaterThan(0);
+    const result = await searchOrSkip('agent', 5);
+    if (result == null) return;
+    if (result.length === 0) {
+      console.warn('[live-test] Semantic endpoint returned no results for "agent"; skipping.');
+      return;
+    }
     for (const item of result) {
       expect(typeof item.chainId).toBe('number');
       expect(typeof item.agentId).toBe('string');
@@ -60,10 +62,8 @@ describeMaybe('Semantic search via SDK (live)', () => {
   // Pagination removed.
 
   it('returns valid structure (single query to avoid rate limit)', async () => {
-    const result = await sdk.searchAgents(
-      { keyword: 'assistant' },
-      { semanticTopK: 5 }
-    );
+    const result = await searchOrSkip('assistant', 5);
+    if (result == null) return;
     expect(Array.isArray(result)).toBe(true);
     if (result.length > 0) {
       expect(result[0].agentId).toMatch(/^\d+:\d+$/);

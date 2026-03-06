@@ -12,8 +12,13 @@ import type { AgentId, Address, URI, Timestamp, IdemKey } from '../models/types.
 import type { ChainClient, TransactionOptions } from './chain-client.js';
 import type { IPFSClient } from './ipfs-client.js';
 import type { SubgraphClient } from './subgraph-client.js';
-import { parseAgentId, formatAgentId, formatFeedbackId, parseFeedbackId } from '../utils/id-format.js';
-import { DEFAULTS } from '../utils/constants.js';
+import {
+  formatAgentId,
+  formatFeedbackId,
+  parseAgentId,
+  parseFeedbackId,
+} from '../utils/id-format.js';
+import { stableJsonStringify } from '../utils/stable-json.js';
 import { REPUTATION_REGISTRY_ABI } from './contracts.js';
 import { encodeReputationValue, decodeReputationValue } from '../utils/value-encoding.js';
 import { decodeEventLog, type Hex } from 'viem';
@@ -123,7 +128,7 @@ export class FeedbackManager {
       );
     }
 
-    // Get current feedback index for this client-agent pair
+    // Best-effort predicted feedback index; the mined receipt is authoritative.
     let feedbackIndex: number;
     try {
       if (!this.reputationRegistryAddress) {
@@ -160,7 +165,8 @@ export class FeedbackManager {
       try {
         // Build an ERC-8004 compliant off-chain feedback file:
         // include MUST fields from the spec + optional on-chain fields, then append rich off-chain fields.
-        const identityRegistryAddress = this.identityRegistryAddress || '0x0000000000000000000000000000000000000000';
+        const identityRegistryAddress =
+          this.identityRegistryAddress || '0x0000000000000000000000000000000000000000';
 
         const createdAt =
           typeof (feedbackFile as any)?.createdAt === 'string'
@@ -187,8 +193,7 @@ export class FeedbackManager {
 
         const cid = await this.ipfsClient.addJson(fileForStorage, 'feedback.json');
         feedbackUri = `ipfs://${cid}`;
-        // Calculate hash of sorted JSON
-        const sortedJson = JSON.stringify(fileForStorage, Object.keys(fileForStorage).sort());
+        const sortedJson = stableJsonStringify(fileForStorage);
         feedbackHash = this.chainClient.keccak256Utf8(sortedJson);
       } catch (error) {
         // Failed to store on IPFS - log error but continue without IPFS storage
@@ -199,7 +204,7 @@ export class FeedbackManager {
     } else if (!this.ipfsClient && hasOffchainFile) {
       // If the caller provided an off-chain file but no IPFS backend is configured,
       // we should not silently drop it.
-      throw new Error('feedbackFile provided, but no IPFS backend is configured (pinata/filecoinPin/node).');
+      throw new Error('feedbackFile provided, but no IPFS backend is configured (pinata/node).');
     }
 
     // Submit to blockchain
@@ -231,12 +236,19 @@ export class FeedbackManager {
       throw new Error(`Failed to submit feedback to blockchain: ${errorMessage}`);
     }
 
-    return new TransactionHandle(txHash as Hex, this.chainClient, async () => {
+    return new TransactionHandle(txHash as Hex, this.chainClient, async (receipt) => {
+      const minedFeedbackIndex =
+        this._extractFeedbackIndexFromReceipt(receipt, BigInt(tokenId), clientAddress) ??
+        feedbackIndex;
+
       // Create feedback object (deterministic from submission-time inputs)
-      const parsedId = parseFeedbackId(formatFeedbackId(agentId, clientAddress, feedbackIndex));
+      const parsedId = parseFeedbackId(
+        formatFeedbackId(agentId, clientAddress, minedFeedbackIndex)
+      );
 
       // Extract typed values from the optional off-chain file
-      const textValue = feedbackFile && typeof feedbackFile.text === 'string' ? feedbackFile.text : undefined;
+      const textValue =
+        feedbackFile && typeof feedbackFile.text === 'string' ? feedbackFile.text : undefined;
       const contextValue =
         feedbackFile &&
         feedbackFile.context &&
@@ -268,9 +280,13 @@ export class FeedbackManager {
         answers: [],
         isRevoked: false,
         // Off-chain only fields
-        capability: feedbackFile && typeof feedbackFile.capability === 'string' ? feedbackFile.capability : undefined,
+        capability:
+          feedbackFile && typeof feedbackFile.capability === 'string'
+            ? feedbackFile.capability
+            : undefined,
         name: feedbackFile && typeof feedbackFile.name === 'string' ? feedbackFile.name : undefined,
-        skill: feedbackFile && typeof feedbackFile.skill === 'string' ? feedbackFile.skill : undefined,
+        skill:
+          feedbackFile && typeof feedbackFile.skill === 'string' ? feedbackFile.skill : undefined,
         task: feedbackFile && typeof feedbackFile.task === 'string' ? feedbackFile.task : undefined,
       };
     });
@@ -358,7 +374,12 @@ export class FeedbackManager {
       }
 
       // Fallback: if endpoint wasn't present on-chain, try reading it from the off-chain file.
-      if ((!endpoint || endpoint === '') && fileURI && this.ipfsClient && fileURI.startsWith('ipfs://')) {
+      if (
+        (!endpoint || endpoint === '') &&
+        fileURI &&
+        this.ipfsClient &&
+        fileURI.startsWith('ipfs://')
+      ) {
         try {
           const cid = fileURI.replace('ipfs://', '');
           const file = await this.ipfsClient.getJson<Record<string, unknown>>(cid);
@@ -395,97 +416,95 @@ export class FeedbackManager {
    * Supports chainId:agentId format in params.agents
    */
   async searchFeedback(params: SearchFeedbackParams): Promise<Feedback[]> {
-    // Determine which subgraph client to use based on agentId chainId
-    let subgraphClientToUse = this.subgraphClient;
-    let formattedAgents: string[] | undefined;
-    
-    // If agents are specified, check if they have chainId prefixes
-    if (params.agents && params.agents.length > 0 && this.getSubgraphClientForChain) {
-      // Parse first agentId to determine chain
-      const firstAgentId = params.agents[0];
-      let chainId: number | undefined;
-      let fullAgentId: string;
-      
-      if (firstAgentId.includes(':')) {
-        const parsed = parseAgentId(firstAgentId);
-        chainId = parsed.chainId;
-        fullAgentId = firstAgentId;
-        // Get subgraph client for the specified chain
-        subgraphClientToUse = this.getSubgraphClientForChain(chainId);
-        // Format all agentIds to ensure they have chainId prefix
-        formattedAgents = params.agents.map(agentId => {
-          if (agentId.includes(':')) {
-            return agentId;
-          } else {
-            // Format with the same chainId as the first agent
-            return formatAgentId(chainId!, parseInt(agentId, 10));
-          }
-        });
-      } else {
-        // Use default chain - format agentIds with default chainId
-        chainId = this.defaultChainId;
-        if (this.defaultChainId !== undefined) {
-          formattedAgents = params.agents.map(agentId => {
-            if (agentId.includes(':')) {
-              return agentId;
-            } else {
-              return formatAgentId(this.defaultChainId!, parseInt(agentId, 10));
-            }
-          });
-        } else {
-          formattedAgents = params.agents;
+    const feedbacks: Feedback[] = [];
+    const first = 1000;
+    const groups = new Map<number | 'default', AgentId[]>();
+
+    if (params.agents && params.agents.length > 0) {
+      for (const rawAgentId of params.agents) {
+        if (rawAgentId.includes(':')) {
+          const parsed = parseAgentId(rawAgentId);
+          const group = groups.get(parsed.chainId) || [];
+          group.push(rawAgentId);
+          groups.set(parsed.chainId, group);
+          continue;
         }
-        // Don't change subgraphClientToUse - use the default one
+
+        if (this.defaultChainId === undefined) {
+          const group = groups.get('default') || [];
+          group.push(rawAgentId);
+          groups.set('default', group);
+          continue;
+        }
+
+        const formattedAgentId = formatAgentId(
+          this.defaultChainId,
+          parseAgentId(`${this.defaultChainId}:${rawAgentId}`).tokenId
+        );
+        const group = groups.get(this.defaultChainId) || [];
+        group.push(formattedAgentId);
+        groups.set(this.defaultChainId, group);
       }
-    } else {
-      formattedAgents = params.agents;
     }
 
-    if (!subgraphClientToUse) {
-      // Fallback not implemented (would require blockchain queries)
-      // For now, return empty if subgraph unavailable
+    const searchTargets =
+      groups.size > 0
+        ? Array.from(groups.entries())
+            .map(([chainId, agents]) => ({
+              client:
+                chainId === 'default'
+                  ? this.subgraphClient
+                  : this.getSubgraphClientForChain?.(chainId) ||
+                    (chainId === this.defaultChainId ? this.subgraphClient : undefined),
+              agents,
+            }))
+            .filter((target): target is { client: SubgraphClient; agents: AgentId[] } =>
+              Boolean(target.client)
+            )
+        : this.subgraphClient
+          ? [{ client: this.subgraphClient, agents: params.agents }]
+          : [];
+
+    if (searchTargets.length === 0) {
       return [];
     }
 
-    const feedbacks: Feedback[] = [];
-    const first = 1000;
-    const queryParams = {
-      agents: formattedAgents || params.agents,
-      reviewers: params.reviewers,
-      tags: params.tags,
-      capabilities: params.capabilities,
-      skills: params.skills,
-      tasks: params.tasks,
-      names: params.names,
-      minValue: params.minValue,
-      maxValue: params.maxValue,
-      includeRevoked: params.includeRevoked || false,
-    };
+    for (const target of searchTargets) {
+      const queryParams = {
+        agents: target.agents,
+        reviewers: params.reviewers,
+        tags: params.tags,
+        capabilities: params.capabilities,
+        skills: params.skills,
+        tasks: params.tasks,
+        names: params.names,
+        minValue: params.minValue,
+        maxValue: params.maxValue,
+        includeRevoked: params.includeRevoked || false,
+      };
 
-    for (let skip = 0; ; skip += first) {
-      const feedbacksData = await subgraphClientToUse.searchFeedback(queryParams, first, skip, 'createdAt', 'desc');
-      for (const fbData of feedbacksData) {
-        // Parse agentId from feedback ID
-        const feedbackId = fbData.id;
-        const parts = feedbackId.split(':');
-        let agentIdStr: string;
-        let clientAddr: string;
-        let feedbackIdx: number;
-
-        if (parts.length >= 2) {
-          agentIdStr = `${parts[0]}:${parts[1]}`;
-          clientAddr = parts.length > 2 ? parts[2] : '';
-          feedbackIdx = parts.length > 3 ? parseInt(parts[3], 10) : 1;
-        } else {
-          agentIdStr = feedbackId;
-          clientAddr = '';
-          feedbackIdx = 1;
+      for (let skip = 0; ; skip += first) {
+        const feedbacksData = await target.client.searchFeedback(
+          queryParams,
+          first,
+          skip,
+          'createdAt',
+          'desc'
+        );
+        for (const fbData of feedbacksData) {
+          const feedbackId = feedbackDataToIdParts(fbData.id);
+          const feedback = this._mapSubgraphFeedbackToModel(
+            fbData,
+            feedbackId.agentId,
+            feedbackId.clientAddress,
+            feedbackId.feedbackIndex
+          );
+          feedbacks.push(feedback);
         }
-
-        const feedback = this._mapSubgraphFeedbackToModel(fbData, agentIdStr, clientAddr, feedbackIdx);
-        feedbacks.push(feedback);
+        if (feedbacksData.length < first) {
+          break;
+        }
       }
-      if (feedbacksData.length < first) break;
     }
 
     return feedbacks;
@@ -536,9 +555,10 @@ export class FeedbackManager {
     let context: Record<string, any> | undefined;
     if (feedbackFile.context) {
       try {
-        context = typeof feedbackFile.context === 'string'
-          ? JSON.parse(feedbackFile.context)
-          : feedbackFile.context;
+        context =
+          typeof feedbackFile.context === 'string'
+            ? JSON.parse(feedbackFile.context)
+            : feedbackFile.context;
       } catch {
         context = { raw: feedbackFile.context };
       }
@@ -550,17 +570,24 @@ export class FeedbackManager {
       id,
       agentId,
       reviewer: clientAddress,
-      value: feedbackData.value !== undefined && feedbackData.value !== null ? Number(feedbackData.value) : undefined,
+      value:
+        feedbackData.value !== undefined && feedbackData.value !== null
+          ? Number(feedbackData.value)
+          : undefined,
       tags,
       endpoint:
         typeof feedbackData.endpoint === 'string'
-          ? (feedbackData.endpoint || undefined)
-          : (typeof feedbackFile.endpoint === 'string' ? (feedbackFile.endpoint || undefined) : undefined),
+          ? feedbackData.endpoint || undefined
+          : typeof feedbackFile.endpoint === 'string'
+            ? feedbackFile.endpoint || undefined
+            : undefined,
       text: feedbackFile.text || undefined,
       context,
       proofOfPayment,
       fileURI: feedbackData.feedbackURI || feedbackData.feedbackUri || undefined,
-      createdAt: feedbackData.createdAt ? parseInt(feedbackData.createdAt, 10) : Math.floor(Date.now() / 1000),
+      createdAt: feedbackData.createdAt
+        ? parseInt(feedbackData.createdAt, 10)
+        : Math.floor(Date.now() / 1000),
       answers,
       isRevoked: feedbackData.isRevoked || false,
       capability: feedbackFile.capability || undefined,
@@ -578,14 +605,55 @@ export class FeedbackManager {
     const tags: string[] = [];
 
     if (tag1 && tag1.trim() !== '') {
-          tags.push(tag1);
-        }
+      tags.push(tag1);
+    }
 
     if (tag2 && tag2.trim() !== '') {
-          tags.push(tag2);
+      tags.push(tag2);
     }
 
     return tags;
+  }
+
+  private _extractFeedbackIndexFromReceipt(
+    receipt: { logs?: Array<{ topics?: string[]; data?: string }> },
+    tokenId: bigint,
+    clientAddress: Address
+  ): number | undefined {
+    for (const log of receipt.logs || []) {
+      try {
+        if (!log.topics || log.topics.length === 0 || !log.data) {
+          continue;
+        }
+
+        const parsed = decodeEventLog({
+          abi: REPUTATION_REGISTRY_ABI as any,
+          data: log.data as Hex,
+          topics: log.topics as [Hex, ...Hex[]],
+        }) as any;
+
+        if (parsed.eventName !== 'NewFeedback') {
+          continue;
+        }
+
+        const logAgentId = parsed.args?.agentId;
+        const logClientAddress = parsed.args?.clientAddress;
+        const logFeedbackIndex = parsed.args?.feedbackIndex;
+        if (
+          logAgentId !== undefined &&
+          BigInt(logAgentId) === tokenId &&
+          typeof logClientAddress === 'string' &&
+          logClientAddress.toLowerCase() === clientAddress.toLowerCase() &&
+          logFeedbackIndex !== undefined
+        ) {
+          return Number(logFeedbackIndex);
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    return undefined;
   }
 
   /**
@@ -624,7 +692,10 @@ export class FeedbackManager {
   /**
    * Revoke feedback
    */
-  async revokeFeedback(agentId: AgentId, feedbackIndex: number): Promise<TransactionHandle<Feedback>> {
+  async revokeFeedback(
+    agentId: AgentId,
+    feedbackIndex: number
+  ): Promise<TransactionHandle<Feedback>> {
     if (!this.reputationRegistryAddress) {
       throw new Error('Reputation registry not available');
     }
@@ -651,7 +722,6 @@ export class FeedbackManager {
     }
   }
 
-
   /**
    * Get reputation summary
    * Supports chainId:agentId format
@@ -665,9 +735,9 @@ export class FeedbackManager {
     let chainId: number | undefined;
     let fullAgentId: string;
     let tokenId: number;
-    
+
     let subgraphClient: SubgraphClient | undefined;
-    
+
     if (agentId.includes(':')) {
       const parsed = parseAgentId(agentId);
       chainId = parsed.chainId;
@@ -680,7 +750,14 @@ export class FeedbackManager {
     } else {
       // Use default chain
       chainId = this.defaultChainId;
-      tokenId = parseInt(agentId, 10);
+      if (this.defaultChainId !== undefined) {
+        tokenId = parseAgentId(`${this.defaultChainId}:${agentId}`).tokenId;
+      } else {
+        if (!/^\d+$/.test(agentId)) {
+          throw new Error(`Invalid AgentId format: ${agentId}. Expected "chainId:tokenId"`);
+        }
+        tokenId = Number(agentId);
+      }
       if (this.defaultChainId !== undefined) {
         fullAgentId = formatAgentId(this.defaultChainId, tokenId);
       } else {
@@ -694,52 +771,57 @@ export class FeedbackManager {
     // Try subgraph first if available
     if (subgraphClient) {
       try {
-        // Use subgraph to calculate reputation
-        // Query feedback for this agent
-        const feedbacksData = await subgraphClient.searchFeedback(
+        const feedbacksData: any[] = [];
+        for (let skip = 0; ; skip += 1000) {
+          const page = await subgraphClient.searchFeedback(
             {
               agents: [fullAgentId],
             },
-            1000, // first
-            0, // skip
+            1000,
+            skip,
             'createdAt',
             'desc'
           );
-
-          // Filter by tags if provided
-          let filteredFeedbacks = feedbacksData;
-          if (tag1 || tag2) {
-            filteredFeedbacks = feedbacksData.filter((fb: any) => {
-              const fbTag1 = fb.tag1 || '';
-              const fbTag2 = fb.tag2 || '';
-              if (tag1 && tag2) {
-                return (fbTag1 === tag1 && fbTag2 === tag2) || (fbTag1 === tag2 && fbTag2 === tag1);
-              } else if (tag1) {
-                return fbTag1 === tag1 || fbTag2 === tag1;
-              } else if (tag2) {
-                return fbTag1 === tag2 || fbTag2 === tag2;
-              }
-              return true;
-            });
+          feedbacksData.push(...page);
+          if (page.length < 1000) {
+            break;
           }
+        }
 
-          // Filter out revoked feedback
-          const validFeedbacks = filteredFeedbacks.filter((fb: any) => !fb.isRevoked);
-
-          if (validFeedbacks.length > 0) {
-            const values = validFeedbacks
-              .map((fb: any) => fb.value)
-              .filter((v: any) => v !== null && v !== undefined);
-            
-            if (values.length > 0) {
-              const sum = values.reduce((a: number, b: number) => a + Number(b), 0);
-              const averageValue = sum / values.length;
-              return {
-                count: validFeedbacks.length,
-                averageValue: Math.round(averageValue * 100) / 100, // Round to 2 decimals
-              };
+        // Filter by tags if provided
+        let filteredFeedbacks = feedbacksData;
+        if (tag1 || tag2) {
+          filteredFeedbacks = feedbacksData.filter((fb: any) => {
+            const fbTag1 = fb.tag1 || '';
+            const fbTag2 = fb.tag2 || '';
+            if (tag1 && tag2) {
+              return (fbTag1 === tag1 && fbTag2 === tag2) || (fbTag1 === tag2 && fbTag2 === tag1);
+            } else if (tag1) {
+              return fbTag1 === tag1 || fbTag2 === tag1;
+            } else if (tag2) {
+              return fbTag1 === tag2 || fbTag2 === tag2;
             }
+            return true;
+          });
+        }
+
+        // Filter out revoked feedback
+        const validFeedbacks = filteredFeedbacks.filter((fb: any) => !fb.isRevoked);
+
+        if (validFeedbacks.length > 0) {
+          const values = validFeedbacks
+            .map((fb: any) => fb.value)
+            .filter((v: any) => v !== null && v !== undefined);
+
+          if (values.length > 0) {
+            const sum = values.reduce((a: number, b: number) => a + Number(b), 0);
+            const averageValue = sum / values.length;
+            return {
+              count: validFeedbacks.length,
+              averageValue: Math.round(averageValue * 100) / 100, // Round to 2 decimals
+            };
           }
+        }
 
         return { count: 0, averageValue: 0 };
       } catch (error) {
@@ -754,11 +836,15 @@ export class FeedbackManager {
 
     // For blockchain query, we need the chain to match the SDK's default chain
     // If chainId is specified and different, we can't use blockchain query
-    if (chainId !== undefined && this.defaultChainId !== undefined && chainId !== this.defaultChainId) {
+    if (
+      chainId !== undefined &&
+      this.defaultChainId !== undefined &&
+      chainId !== this.defaultChainId
+    ) {
       throw new Error(
         `Blockchain reputation summary not supported for chain ${chainId}. ` +
-        `SDK is configured for chain ${this.defaultChainId}. ` +
-        `Use subgraph-based summary instead.`
+          `SDK is configured for chain ${this.defaultChainId}. ` +
+          `Use subgraph-based summary instead.`
       );
     }
 
@@ -794,3 +880,15 @@ export class FeedbackManager {
   }
 }
 
+function feedbackDataToIdParts(feedbackId: string): {
+  agentId: AgentId;
+  clientAddress: Address;
+  feedbackIndex: number;
+} {
+  const parsedId = parseFeedbackId(feedbackId);
+  return {
+    agentId: parsedId.agentId,
+    clientAddress: parsedId.clientAddress,
+    feedbackIndex: parsedId.feedbackIndex,
+  };
+}

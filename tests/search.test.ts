@@ -37,7 +37,8 @@ describeMaybe('Agent Search and Discovery (live)', () => {
     if (agent) {
       expect(agent.name).toBeTruthy();
       expect(agent.agentId).toBe(firstAgent.agentId);
-      expect(agent.chainId).toBe(CHAIN_ID);
+      expect(agent.chainId).toBe(firstAgent.chainId);
+      expect(agent.chainId).toBe(Number(firstAgent.agentId.split(':')[0]));
     } else {
       // Agent not found in subgraph, skip this test
       console.log('Agent not found in subgraph, skipping test');
@@ -196,4 +197,3 @@ describeMaybe('Agent Search and Discovery (live)', () => {
     });
   });
 });
-

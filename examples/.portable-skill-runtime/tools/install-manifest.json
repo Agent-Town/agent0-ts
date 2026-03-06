@@ -1,0 +1,15 @@
+{
+  "installedAt": "2026-03-03T02:10:22.072Z",
+  "tools": [
+    {
+      "name": "fetch-skill",
+      "path": "/Users/robin/Projects/agent0-ts/examples/.portable-skill-runtime/tools/fetch-skill.mjs",
+      "version": "1.0.0"
+    },
+    {
+      "name": "verify-skill",
+      "path": "/Users/robin/Projects/agent0-ts/examples/.portable-skill-runtime/tools/verify-skill.mjs",
+      "version": "1.0.0"
+    }
+  ]
+}

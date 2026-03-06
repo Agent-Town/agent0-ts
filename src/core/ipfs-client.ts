@@ -9,11 +9,10 @@ import type { KuboRPCClient } from 'kubo-rpc-client';
 import type { RegistrationFile } from '../models/interfaces.js';
 import { IPFS_GATEWAYS, TIMEOUTS } from '../utils/constants.js';
 import { parseAgentId } from '../utils/id-format.js';
+import { firstSuccessful, transformRegistrationFile } from '../utils/index.js';
 
 export interface IPFSClientConfig {
   url?: string; // IPFS node URL (e.g., "http://localhost:5001")
-  filecoinPinEnabled?: boolean;
-  filecoinPrivateKey?: string;
   pinataEnabled?: boolean;
   pinataJwt?: string;
 }
@@ -22,26 +21,27 @@ export interface IPFSClientConfig {
  * Client for IPFS operations supporting multiple providers
  */
 export class IPFSClient {
-  private provider: 'pinata' | 'filecoinPin' | 'node';
+  private provider: 'pinata' | 'node';
   private config: IPFSClientConfig;
   private client?: KuboRPCClient;
 
   constructor(config: IPFSClientConfig) {
     this.config = config;
+    const legacyConfig = config as IPFSClientConfig & { filecoinPinEnabled?: boolean };
 
     // Determine provider
     if (config.pinataEnabled) {
       this.provider = 'pinata';
       this._verifyPinataJwt();
-    } else if (config.filecoinPinEnabled) {
-      this.provider = 'filecoinPin';
-      // Note: Filecoin Pin in TypeScript requires external CLI or API
-      // We'll use HTTP API if available, otherwise throw error
+    } else if (legacyConfig.filecoinPinEnabled) {
+      throw new Error(
+        "Filecoin Pin is not yet supported in the TypeScript SDK. Use 'pinata' or 'node'."
+      );
     } else if (config.url) {
       this.provider = 'node';
       // Lazy initialization - client will be created on first use
     } else {
-      throw new Error('No IPFS provider configured. Specify url, pinataEnabled, or filecoinPinEnabled.');
+      throw new Error('No IPFS provider configured. Specify url or pinataEnabled.');
     }
   }
 
@@ -80,14 +80,14 @@ export class IPFSClient {
       // Add timeout to fetch
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), TIMEOUTS.PINATA_UPLOAD);
-      
+
       const response = await fetch(url, {
         method: 'POST',
         headers,
         body: formData,
         signal: controller.signal,
       });
-      
+
       clearTimeout(timeoutId);
 
       if (!response.ok) {
@@ -116,13 +116,13 @@ export class IPFSClient {
           if (verifyResponse.status === 429) {
             console.warn(
               `[IPFS] Pinata returned CID ${cid} but gateway is rate-limited (HTTP 429). ` +
-              `Content is likely available but verification skipped due to rate limiting.`
+                `Content is likely available but verification skipped due to rate limiting.`
             );
           } else {
             // Other HTTP errors might indicate a real problem
             throw new Error(
               `Pinata returned CID ${cid} but content is not accessible on gateway (HTTP ${verifyResponse.status}). ` +
-              `This may indicate the upload failed. Full Pinata response: ${JSON.stringify(result)}`
+                `This may indicate the upload failed. Full Pinata response: ${JSON.stringify(result)}`
             );
           }
         }
@@ -133,20 +133,20 @@ export class IPFSClient {
           if (verifyError.message.includes('timeout') || verifyError.message.includes('aborted')) {
             console.warn(
               `[IPFS] Pinata returned CID ${cid} but verification timed out. ` +
-              `Content may propagate with delay. Full Pinata response: ${JSON.stringify(result)}`
+                `Content may propagate with delay. Full Pinata response: ${JSON.stringify(result)}`
             );
           } else if (verifyError.message.includes('429')) {
             // Rate limit is non-fatal
             console.warn(
               `[IPFS] Pinata returned CID ${cid} but gateway is rate-limited. ` +
-              `Content is likely available but verification skipped.`
+                `Content is likely available but verification skipped.`
             );
           } else {
             // Other errors might indicate a real problem, but we'll still continue
             // since Pinata API returned success - content might just need time to propagate
             console.warn(
               `[IPFS] Pinata returned CID ${cid} but verification failed: ${verifyError.message}. ` +
-              `Content may propagate with delay. Full Pinata response: ${JSON.stringify(result)}`
+                `Content may propagate with delay. Full Pinata response: ${JSON.stringify(result)}`
             );
           }
         }
@@ -160,20 +160,6 @@ export class IPFSClient {
       const errorMessage = error instanceof Error ? error.message : String(error);
       throw new Error(`Failed to pin to Pinata: ${errorMessage}`);
     }
-  }
-
-  /**
-   * Pin data to Filecoin Pin
-   * Note: This requires the Filecoin Pin API or CLI to be available
-   * For now, we'll throw an error directing users to use the CLI
-   */
-  private async _pinToFilecoin(data: string): Promise<string> {
-    // Filecoin Pin typically requires CLI or API access
-    // This is a placeholder - in production, you'd call the Filecoin Pin API
-    throw new Error(
-      'Filecoin Pin via TypeScript SDK not yet fully implemented. ' +
-        'Please use the filecoin-pin CLI or implement the Filecoin Pin API integration.'
-    );
   }
 
   /**
@@ -196,8 +182,6 @@ export class IPFSClient {
     try {
       if (this.provider === 'pinata') {
         return await this._pinToPinata(data, fileName);
-      } else if (this.provider === 'filecoinPin') {
-        return await this._pinToFilecoin(data);
       } else {
         return await this._pinToLocalIpfs(data);
       }
@@ -224,8 +208,6 @@ export class IPFSClient {
 
     if (this.provider === 'pinata') {
       return this._pinToPinata(data, fileName);
-    } else if (this.provider === 'filecoinPin') {
-      return this._pinToFilecoin(filepath);
     } else {
       await this._ensureClient();
       if (!this.client) {
@@ -247,34 +229,26 @@ export class IPFSClient {
       cid = cid.slice(7); // Remove "ipfs://" prefix
     }
 
-    // For Pinata and Filecoin Pin, use IPFS gateways
-    if (this.provider === 'pinata' || this.provider === 'filecoinPin') {
-      const gateways = IPFS_GATEWAYS.map(gateway => `${gateway}${cid}`);
+    // For Pinata, use IPFS gateways
+    if (this.provider === 'pinata') {
+      const gateways = IPFS_GATEWAYS.map((gateway) => `${gateway}${cid}`);
 
-      // Try all gateways in parallel - use the first successful response
+      // Try all gateways in parallel and return on the first success.
       const promises = gateways.map(async (gateway) => {
-        try {
-          const response = await fetch(gateway, {
-            signal: AbortSignal.timeout(TIMEOUTS.IPFS_GATEWAY),
-          });
-          if (response.ok) {
-            return await response.text();
-          }
+        const response = await fetch(gateway, {
+          signal: AbortSignal.timeout(TIMEOUTS.IPFS_GATEWAY),
+        });
+        if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);
-        } catch (error) {
-          throw error;
         }
+        return await response.text();
       });
 
-      // Use Promise.allSettled to get the first successful result
-      const results = await Promise.allSettled(promises);
-      for (const result of results) {
-        if (result.status === 'fulfilled') {
-          return result.value;
-        }
+      try {
+        return await firstSuccessful(promises, 'Failed to retrieve data from all IPFS gateways');
+      } catch {
+        throw new Error('Failed to retrieve data from all IPFS gateways');
       }
-
-      throw new Error('Failed to retrieve data from all IPFS gateways');
     } else {
       await this._ensureClient();
       if (!this.client) {
@@ -311,34 +285,24 @@ export class IPFSClient {
    * Pin a CID to local node
    */
   async pin(cid: string): Promise<{ pinned: string[] }> {
-    if (this.provider === 'filecoinPin') {
-      // Filecoin Pin automatically pins data, so this is a no-op
-      return { pinned: [cid] };
-    } else {
-      await this._ensureClient();
-      if (!this.client) {
-        throw new Error('No IPFS client available');
-      }
-      await this.client.pin.add(cid);
-      return { pinned: [cid] };
+    await this._ensureClient();
+    if (!this.client) {
+      throw new Error('No IPFS client available');
     }
+    await this.client.pin.add(cid);
+    return { pinned: [cid] };
   }
 
   /**
    * Unpin a CID from local node
    */
   async unpin(cid: string): Promise<{ unpinned: string[] }> {
-    if (this.provider === 'filecoinPin') {
-      // Filecoin Pin doesn't support unpinning in the same way
-      return { unpinned: [cid] };
-    } else {
-      await this._ensureClient();
-      if (!this.client) {
-        throw new Error('No IPFS client available');
-      }
-      await this.client.pin.rm(cid);
-      return { unpinned: [cid] };
+    await this._ensureClient();
+    if (!this.client) {
+      throw new Error('No IPFS client available');
     }
+    await this.client.pin.rm(cid);
+    return { unpinned: [cid] };
   }
 
   /**
@@ -364,15 +328,15 @@ export class IPFSClient {
         name: ep.type, // EndpointType enum value (e.g., "MCP", "A2A")
         endpoint: ep.value,
       };
-      
+
       // Spread meta fields (version, mcpTools, mcpPrompts, etc.) into the endpoint dict
       if (ep.meta) {
         Object.assign(endpointDict, ep.meta);
       }
-      
+
       services.push(endpointDict);
     }
-    
+
     // Build registrations array
     const registrations: Array<Record<string, unknown>> = [];
     if (registrationFile.agentId) {
@@ -403,7 +367,7 @@ export class IPFSClient {
         agentRegistry,
       });
     }
-    
+
     // Build ERC-8004 compliant registration file
     const data = {
       type: 'https://eips.ethereum.org/EIPS/eip-8004#registration-v1',
@@ -419,7 +383,7 @@ export class IPFSClient {
       // ERC-8004 registration file uses `x402Support` (camelCase).
       x402Support: registrationFile.x402support,
     };
-    
+
     return this.addJson(data, 'agent-registration.json');
   }
 
@@ -427,8 +391,8 @@ export class IPFSClient {
    * Get registration file from IPFS by CID
    */
   async getRegistrationFile(cid: string): Promise<RegistrationFile> {
-    const data = await this.getJson<RegistrationFile>(cid);
-    return data;
+    const data = await this.getJson<Record<string, unknown>>(cid);
+    return transformRegistrationFile(data);
   }
 
   /**

@@ -4,6 +4,19 @@
 
 import { normalizeAddress } from './validation.js';
 
+function parseStrictInteger(value: string, label: string): number {
+  if (!/^\d+$/.test(value)) {
+    throw new Error(`Invalid ${label}: ${value}. Expected a base-10 integer`);
+  }
+
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new Error(`Invalid ${label}: ${value}. Expected a safe integer`);
+  }
+
+  return parsed;
+}
+
 /**
  * Parse an AgentId string into chainId and tokenId
  * Format: "chainId:tokenId" or just "tokenId" (when chain is implicit)
@@ -12,19 +25,17 @@ export function parseAgentId(agentId: string | null | undefined): { chainId: num
   if (!agentId || typeof agentId !== 'string') {
     throw new Error(`Invalid AgentId: ${agentId}. Expected a non-empty string in format "chainId:tokenId"`);
   }
-  
+
   if (agentId.includes(':')) {
-    const [chainId, tokenId] = agentId.split(':');
-    const parsedChainId = parseInt(chainId, 10);
-    const parsedTokenId = parseInt(tokenId, 10);
-    
-    if (isNaN(parsedChainId) || isNaN(parsedTokenId)) {
-      throw new Error(`Invalid AgentId format: ${agentId}. ChainId and tokenId must be valid numbers`);
+    const parts = agentId.split(':');
+    if (parts.length !== 2) {
+      throw new Error(`Invalid AgentId format: ${agentId}. Expected "chainId:tokenId"`);
     }
-    
+
+    const [chainId, tokenId] = parts;
     return {
-      chainId: parsedChainId,
-      tokenId: parsedTokenId,
+      chainId: parseStrictInteger(chainId, 'chainId'),
+      tokenId: parseStrictInteger(tokenId, 'tokenId'),
     };
   }
   throw new Error(`Invalid AgentId format: ${agentId}. Expected "chainId:tokenId"`);
@@ -58,10 +69,8 @@ export function parseFeedbackId(feedbackId: string): {
   const clientAddress = feedbackId.slice(secondLastColonIndex + 1, lastColonIndex);
   const feedbackIndexStr = feedbackId.slice(lastColonIndex + 1);
 
-  const feedbackIndex = parseInt(feedbackIndexStr, 10);
-  if (isNaN(feedbackIndex)) {
-    throw new Error(`Invalid feedback index: ${feedbackIndexStr}`);
-  }
+  parseAgentId(agentId);
+  const feedbackIndex = parseStrictInteger(feedbackIndexStr, 'feedback index');
 
   // Normalize address to lowercase for consistency
   const normalizedAddress = normalizeAddress(clientAddress);
@@ -86,4 +95,3 @@ export function formatFeedbackId(
 
   return `${agentId}:${normalizedAddress}:${feedbackIndex}`;
 }
-
