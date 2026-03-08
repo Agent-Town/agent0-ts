@@ -314,13 +314,13 @@ export class IPFSClient {
   }
 
   /**
-   * Add registration file to IPFS and return CID
+   * Build ERC-8004 registration JSON from SDK registration file.
    */
-  async addRegistrationFile(
+  buildRegistrationJson(
     registrationFile: RegistrationFile,
     chainId?: number,
     identityRegistryAddress?: string
-  ): Promise<string> {
+  ): Record<string, unknown> {
     // Convert from internal format { type, value, meta } to ERC-8004 format { name, endpoint, version }
     const services: Array<Record<string, unknown>> = [];
     for (const ep of registrationFile.endpoints) {
@@ -369,7 +369,7 @@ export class IPFSClient {
     }
 
     // Build ERC-8004 compliant registration file
-    const data = {
+    return {
       type: 'https://eips.ethereum.org/EIPS/eip-8004#registration-v1',
       name: registrationFile.name,
       description: registrationFile.description,
@@ -382,8 +382,22 @@ export class IPFSClient {
       active: registrationFile.active,
       // ERC-8004 registration file uses `x402Support` (camelCase).
       x402Support: registrationFile.x402support,
+      ...(registrationFile.entityType &&
+        registrationFile.entityType !== 'agent' && { entityType: registrationFile.entityType }),
+      ...(registrationFile.provenance && { provenance: registrationFile.provenance }),
+      ...(registrationFile.permissionManifest && { permissionManifest: registrationFile.permissionManifest }),
     };
+  }
 
+  /**
+   * Add registration file to IPFS and return CID
+   */
+  async addRegistrationFile(
+    registrationFile: RegistrationFile,
+    chainId?: number,
+    identityRegistryAddress?: string
+  ): Promise<string> {
+    const data = this.buildRegistrationJson(registrationFile, chainId, identityRegistryAddress);
     return this.addJson(data, 'agent-registration.json');
   }
 

@@ -30,10 +30,13 @@ npm-debug.log*
 # Testing
 coverage/
 .nyc_output/
+tests/agent_registration_*.json
 
 # Temporary files
 *.tmp
 *.temp
+examples/.openclaw-agent/
+examples/.portable-skill-runtime/
 
 # Package manager locks (uncomment if you want to ignore)
 # package-lock.json

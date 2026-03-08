@@ -102,6 +102,17 @@ export function transformRegistrationFile(rawData: Record<string, unknown>): Reg
       : [];
 
   return {
+    entityType: typeof rawData.entityType === 'string' ? (rawData.entityType as RegistrationFile['entityType']) : undefined,
+    provenance:
+      rawData.provenance && typeof rawData.provenance === 'object' && !Array.isArray(rawData.provenance)
+        ? (rawData.provenance as RegistrationFile['provenance'])
+        : undefined,
+    permissionManifest:
+      rawData.permissionManifest &&
+      typeof rawData.permissionManifest === 'object' &&
+      !Array.isArray(rawData.permissionManifest)
+        ? (rawData.permissionManifest as RegistrationFile['permissionManifest'])
+        : undefined,
     name: typeof rawData.name === 'string' ? rawData.name : '',
     description: typeof rawData.description === 'string' ? rawData.description : '',
     image: typeof rawData.image === 'string' ? rawData.image : undefined,

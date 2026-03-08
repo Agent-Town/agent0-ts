@@ -33,13 +33,26 @@ export class SemanticSearchClient {
 
     // API expects "limit" not "topK" (semantic-search.ag0.xyz v1)
     const body: Record<string, unknown> = { query: query.trim(), minScore, limit };
+    const request = (timeoutMs: number) =>
+      fetch(`${this.baseUrl}/api/v1/search`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
 
-    const res = await fetch(`${this.baseUrl}/api/v1/search`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(TIMEOUTS.SEMANTIC_SEARCH),
-    });
+    let res: Response;
+    try {
+      res = await request(TIMEOUTS.SEMANTIC_SEARCH);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      const isTimeout =
+        (typeof error === 'object' && error !== null && 'name' in error && (error as { name: string }).name === 'TimeoutError') ||
+        msg.includes('aborted due to timeout');
+      if (!isTimeout) throw error;
+      // Retry once with a longer timeout for cold starts/spiky latency.
+      res = await request(Math.max(TIMEOUTS.SEMANTIC_SEARCH * 2, 30000));
+    }
 
     if (!res.ok) {
       throw new Error(`Semantic search failed: HTTP ${res.status}`);
@@ -58,4 +71,3 @@ export class SemanticSearchClient {
       .filter((r) => Number.isFinite(r.chainId) && r.agentId.includes(':') && Number.isFinite(r.score));
   }
 }
-

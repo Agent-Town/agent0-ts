@@ -20,6 +20,14 @@ This release includes the unified agent discovery/search API.
 
 For breaking changes and migration notes, see `release_notes/RELEASE_NOTES_1.5.3.md` (and prior notes in `release_notes/`).
 
+## Extension Docs (v0.2)
+
+This repository now includes additive v0.2 extensions for multi-entity identities, permission manifests, provenance, canonical reputation tags, and entity-type search.
+
+See:
+
+- `docs/ENTITY_PERMISSION_EXTENSIONS_V0_2.md`
+
 **Bug reports & feedback:** GitHub: [Report issues](https://github.com/agent0lab/agent0-ts/issues) | Telegram: [Agent0 channel](https://t.me/agent0kitchen) | Email: team@ag0.xyz
 
 ## Installation
@@ -101,6 +109,36 @@ const sdk = new SDK({
 });
 ```
 
+### 1c. Security Hardening (Optional, Backward-Compatible)
+
+```typescript
+const sdk = new SDK({
+  chainId: 11155111,
+  rpcUrl: process.env.RPC_URL!,
+  walletProvider: provider,
+
+  // Outbound URL policy for remote fetches (MCP/A2A/registration hydration)
+  outboundUrlPolicy: {
+    enabled: true,
+    allowedHosts: ['*.example.com', 'ipfs.io', 'gateway.pinata.cloud', 'dweb.link'],
+    allowLocalhost: false,
+    allowPrivateNetworks: false,
+  },
+
+  // Registration integrity verification on loadAgent()
+  registrationIntegrity: {
+    mode: 'if-present', // 'off' | 'if-present' | 'required'
+    hashMetadataKey: 'registration.sha256',
+  },
+
+  // Browser private key behavior: 'allow' | 'warn' | 'deny'
+  browserPrivateKeyPolicy: 'deny',
+
+  // Metadata update behavior during registerIPFS() updates
+  metadataUpdatePolicy: 'strict', // 'best-effort' (default) | 'strict'
+});
+```
+
 ### 2. Create and Register Agent
 
 ```typescript
@@ -135,6 +173,24 @@ agent.setActive(true);
 const registrationFile = await agent.registerIPFS();
 console.log(`Agent registered: ${registrationFile.agentId}`); // e.g., "11155111:123"
 console.log(`Agent URI: ${registrationFile.agentURI}`); // e.g., "ipfs://Qm..."
+
+// Create non-agent entities (new)
+const tool = sdk.createTool('GitHub Tool', 'Reads/writes GitHub issues');
+const org = sdk.createOrganization('Acme AI', 'Publisher organization');
+
+// Add entity extensions (new)
+tool.setPermissionManifest({
+  type: 'https://agent.town/schemas/permission-manifest-v1',
+  version: '1.0.0',
+  permissions: [{ id: 'network.fetch', effect: 'allow' }],
+  risk: { level: 'medium', rationale: ['Writes external state'] },
+  safety: { promptInjection: { declaredMitigations: ['domain-allowlist'] } },
+});
+tool.setProvenance({
+  type: 'https://agent.town/schemas/provenance-v1',
+  sources: [{ kind: 'github_repo', url: 'https://github.com/org/repo', licenseSpdx: 'MIT' }],
+  publisher: { name: 'Acme AI' },
+});
 ```
 
 ### 3. Load and Edit Agent
@@ -158,6 +214,7 @@ console.log(`Updated: ${agent.agentURI}`);
 // Unified search (single chain): agent filters + reputation filters in one call
 const results = await sdk.searchAgents(
   {
+    entityType: ['agent', 'tool'], // new
     name: 'AI', // substring
     mcpTools: ['code_generation'],
     a2aSkills: ['python'],
@@ -471,6 +528,7 @@ export interface FeedbackFilters {
 export interface SearchFilters {
   chains?: number[] | 'all';
   agentIds?: string[];
+  entityType?: string | string[];
 
   name?: string; // substring
   description?: string; // substring
@@ -533,12 +591,47 @@ export interface SearchOptions {
 | `semanticMinScore` | Minimum semantic score cutoff (keyword searches only)            |
 | `semanticTopK`     | Limits semantic prefilter size (semantic endpoint has no cursor) |
 
+### New v0.2 Extension APIs
+
+```ts
+// SDK
+createEntity(input: { entityType: string; name: string; description: string; image?: string }): Agent;
+createHuman(name: string, description: string, image?: string): Agent;
+createTool(name: string, description: string, image?: string): Agent;
+createSkill(name: string, description: string, image?: string): Agent;
+createExperience(name: string, description: string, image?: string): Agent;
+createHouse(name: string, description: string, image?: string): Agent;
+createOrganization(name: string, description: string, image?: string): Agent;
+
+// Agent
+agent.entityType: string;
+agent.setEntityType(type: string): Agent;
+agent.setPermissionManifest(manifest: PermissionManifestV1 | PermissionManifestRefV1): Agent;
+agent.getPermissionManifest(): PermissionManifestV1 | PermissionManifestRefV1 | undefined;
+agent.setProvenance(provenance: ProvenanceV1): Agent;
+agent.getProvenance(): ProvenanceV1 | undefined;
+
+// IPFS helper
+ipfsClient.buildRegistrationJson(registrationFile, chainId?, identityRegistryAddress?): Record<string, unknown>;
+
+// Manifest helpers
+validatePermissionManifest(manifest): { ok: boolean; errors: string[] };
+createPermissionManifestRef(manifest, uri, contentType?): PermissionManifestRefV1;
+
+// Reputation tags
+buildCanonicalTags({ dimension, signal }): { tag1: string; tag2: string };
+isCanonicalTag(tag: string): boolean;
+```
+
+See full extension details and examples in `docs/ENTITY_PERMISSION_EXTENSIONS_V0_2.md`.
+
 ### `AgentSummary` (returned items)
 
 ```ts
 export interface AgentSummary {
   chainId: number;
   agentId: string;
+  entityType?: string;
   name: string;
   image?: string;
   description: string;
@@ -589,6 +682,8 @@ Complete working examples are available in the `examples/` directory:
 - `feedback-usage.ts` - Complete feedback flow with IPFS storage
 - `search-agents.ts` - Agent search and discovery
 - `transfer-agent.ts` - Agent ownership transfer
+- `skill-md-publish-openclaw-verify.ts` - Publish `SKILL.md`, anchor URI+SHA-256 on-chain, verify and install in an OpenClaw-style agent flow
+- `skill-md-portable-installer-example.ts` - Publish installer+target `SKILL.md`, bootstrap verification tooling, and install/export for Codex, Claude Code, ChatGPT, and Claude
 
 ## Documentation
 

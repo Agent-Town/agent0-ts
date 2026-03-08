@@ -71,6 +71,7 @@ export type QueryAgent = {
 export type AgentRegistrationFile = {
   id: string;
   agentId?: string | null;
+  entityType?: string | null;
   name?: string | null;
   description?: string | null;
   image?: string | null;
@@ -115,33 +116,51 @@ export class SubgraphClient {
    * Execute a GraphQL query against the subgraph
    */
   async query<T = unknown>(query: string, variables?: Record<string, unknown>): Promise<T> {
-    try {
-      const data = await this.client.request<T>(query, variables || {});
-      return data;
-    } catch (error) {
-      // Backwards/forwards compatibility for hosted subgraphs:
-      // Some deployments still expose `x402support` instead of `x402Support`.
-      const msg = error instanceof Error ? error.message : String(error);
-      // Some deployments do not yet expose `hasOASF` on AgentRegistrationFile.
-      if (
-        (msg.includes('Cannot query field "hasOASF"') || msg.includes('has no field `hasOASF`')) &&
-        query.includes('hasOASF')
-      ) {
-        const q2 = query.split('hasOASF').join('oasfEndpoint');
-        const data2 = await this.client.request<T>(q2, variables || {});
-        return data2;
+    const vars = variables || {};
+    let q = query;
+
+    // Hosted subgraph compatibility: some deployments miss multiple fields at once.
+    // Retry with cumulative rewrites so we can adapt in one request path.
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      try {
+        const data = await this.client.request<T>(q, vars);
+        return data;
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        let rewritten = q;
+
+        if (
+          (msg.includes('Cannot query field "hasOASF"') || msg.includes('has no field `hasOASF`')) &&
+          rewritten.includes('hasOASF')
+        ) {
+          rewritten = rewritten.split('hasOASF').join('oasfEndpoint');
+        }
+
+        if (
+          (msg.includes('Cannot query field "x402Support"') || msg.includes('has no field `x402Support`')) &&
+          rewritten.includes('x402Support')
+        ) {
+          // Avoid String.prototype.replaceAll for older TS lib targets.
+          rewritten = rewritten.split('x402Support').join('x402support');
+        }
+
+        if (
+          (msg.includes('Cannot query field "entityType"') || msg.includes('has no field `entityType`')) &&
+          rewritten.includes('entityType')
+        ) {
+          rewritten = rewritten.split('entityType').join('');
+        }
+
+        if (rewritten !== q) {
+          q = rewritten;
+          continue;
+        }
+
+        throw new Error(`Failed to query subgraph: ${error}`);
       }
-      if (
-        (msg.includes('Cannot query field "x402Support"') || msg.includes('has no field `x402Support`')) &&
-        query.includes('x402Support')
-      ) {
-        // Avoid String.prototype.replaceAll for older TS lib targets.
-        const q2 = query.split('x402Support').join('x402support');
-        const data2 = await this.client.request<T>(q2, variables || {});
-        return data2;
-      }
-      throw new Error(`Failed to query subgraph: ${error}`);
     }
+
+    throw new Error('Failed to query subgraph: compatibility retry limit reached');
   }
 
   /**
@@ -176,47 +195,45 @@ export class SubgraphClient {
       supportedWhere.registrationFile_ = where.registrationFile_;
     }
 
-    // Build WHERE clause with support for nested filters
-    let whereClause = '';
-    if (Object.keys(supportedWhere).length > 0) {
-      const conditions: string[] = [];
-      for (const [key, value] of Object.entries(supportedWhere)) {
-        if ((key === 'registrationFile' || key === 'registrationFile_') && typeof value === 'object') {
-          // Handle nested registrationFile filters
-          // Python SDK uses "registrationFile_" (with underscore) for nested filters in GraphQL
-          const nestedConditions: string[] = [];
-          for (const [nestedKey, nestedValue] of Object.entries(value as Record<string, unknown>)) {
-            if (typeof nestedValue === 'boolean') {
-              nestedConditions.push(`${nestedKey}: ${nestedValue.toString().toLowerCase()}`);
-            } else if (typeof nestedValue === 'string') {
-              nestedConditions.push(`${nestedKey}: "${nestedValue}"`);
-            } else if (nestedValue === null) {
-              if (nestedKey.endsWith('_not')) {
-                nestedConditions.push(`${nestedKey}: null`);
-              } else {
-                nestedConditions.push(`${nestedKey}_not: null`);
-              }
-            }
+    // Build typed where input (variables-based) to avoid GraphQL string interpolation.
+    const whereInput: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(supportedWhere)) {
+      if ((key === 'registrationFile' || key === 'registrationFile_') && value && typeof value === 'object') {
+        const nested: Record<string, unknown> = {};
+        for (const [nestedKey, nestedValue] of Object.entries(value as Record<string, unknown>)) {
+          if (nestedValue === null) {
+            const nestedField = nestedKey.endsWith('_not') ? nestedKey : `${nestedKey}_not`;
+            nested[nestedField] = null;
+            continue;
           }
-          if (nestedConditions.length > 0) {
-            conditions.push(`registrationFile_: { ${nestedConditions.join(', ')} }`);
+          if (
+            typeof nestedValue === 'boolean' ||
+            typeof nestedValue === 'string' ||
+            typeof nestedValue === 'number' ||
+            Array.isArray(nestedValue)
+          ) {
+            nested[nestedKey] = nestedValue;
           }
-        } else if (typeof value === 'boolean') {
-          conditions.push(`${key}: ${value.toString().toLowerCase()}`);
-        } else if (typeof value === 'string') {
-          conditions.push(`${key}: "${value}"`);
-        } else if (typeof value === 'number') {
-          conditions.push(`${key}: ${value}`);
-        } else if (Array.isArray(value)) {
-          conditions.push(`${key}: ${JSON.stringify(value)}`);
-        } else if (value === null) {
-          // Don't add _not if the key already ends with _not (e.g., registrationFile_not)
-          const filterKey = key.endsWith('_not') ? key : `${key}_not`;
-          conditions.push(`${filterKey}: null`);
         }
+        if (Object.keys(nested).length > 0) {
+          whereInput.registrationFile_ = nested;
+        }
+        continue;
       }
-      if (conditions.length > 0) {
-        whereClause = `where: { ${conditions.join(', ')} }`;
+
+      if (value === null) {
+        const field = key.endsWith('_not') ? key : `${key}_not`;
+        whereInput[field] = null;
+        continue;
+      }
+
+      if (
+        typeof value === 'boolean' ||
+        typeof value === 'string' ||
+        typeof value === 'number' ||
+        Array.isArray(value)
+      ) {
+        whereInput[key] = value;
       }
     }
 
@@ -226,6 +243,7 @@ export class SubgraphClient {
           registrationFile {
             id
             agentId
+            entityType
             name
             description
             image
@@ -252,9 +270,9 @@ export class SubgraphClient {
       : '';
 
     const query = `
-      query GetAgents($first: Int!, $skip: Int!, $orderBy: Agent_orderBy!, $orderDirection: OrderDirection!) {
+      query GetAgents($where: Agent_filter, $first: Int!, $skip: Int!, $orderBy: Agent_orderBy!, $orderDirection: OrderDirection!) {
         agents(
-          ${whereClause}
+          where: $where
           first: $first
           skip: $skip
           orderBy: $orderBy
@@ -279,6 +297,7 @@ export class SubgraphClient {
 
     // GraphQL enum expects lowercase
     const variables = {
+      where: Object.keys(whereInput).length > 0 ? whereInput : null,
       first,
       skip,
       orderBy,
@@ -321,6 +340,7 @@ export class SubgraphClient {
           registrationFile {
             id
             agentId
+            entityType
             name
             description
             image
@@ -559,6 +579,7 @@ export class SubgraphClient {
     return {
       chainId,
       agentId: agentIdStr,
+      entityType: regFile?.entityType || undefined,
       // Per ERC-8004 registration schema, name SHOULD be present. If missing in subgraph data,
       // fall back to agentId string to avoid returning an unusable empty name.
       name: regFile?.name || agentIdStr,

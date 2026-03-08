@@ -3,19 +3,16 @@
  * Creates an agent, registers it with a mock HTTP URI, updates it, and verifies data integrity.
  */
 
-import * as fs from 'fs';
-import * as path from 'path';
 import { SDK } from '../src/index';
-import { CHAIN_ID, RPC_URL, AGENT_PRIVATE_KEY, CLIENT_PRIVATE_KEY, printConfig } from './config';
+import { CHAIN_ID, RPC_URL, AGENT_PRIVATE_KEY, printConfig } from './config';
 import { privateKeyToAccount } from 'viem/accounts';
+import { randomBytes } from 'crypto';
 
 const HAS_AGENT_KEY = Boolean(AGENT_PRIVATE_KEY && AGENT_PRIVATE_KEY.trim() !== '');
-const HAS_CLIENT_KEY = Boolean(CLIENT_PRIVATE_KEY && CLIENT_PRIVATE_KEY.trim() !== '');
 // Live/integration test (on-chain).
 // Default: enabled when env vars are present. Set RUN_LIVE_TESTS=0 to disable.
 const RUN_LIVE_TESTS = process.env.RUN_LIVE_TESTS !== '0';
 const describeMaybe = RUN_LIVE_TESTS && HAS_AGENT_KEY ? describe : describe.skip;
-const itWalletMaybe = HAS_CLIENT_KEY ? it : it.skip;
 
 function isSkippableLiveError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
@@ -50,6 +47,11 @@ function generateRandomData() {
     cryptoEconomic: Math.random() > 0.5,
     teeAttestation: Math.random() > 0.5,
   };
+}
+
+async function liveSignatureDeadline(sdk: SDK): Promise<number> {
+  const chainNow = Number(await sdk.chainClient.getBlockTimestamp('latest'));
+  return chainNow + 300;
 }
 
 describeMaybe('Agent Registration with HTTP URI', () => {
@@ -111,17 +113,14 @@ describeMaybe('Agent Registration with HTTP URI', () => {
     agent.setX402Support(testData.x402support);
     agent.setTrust(testData.reputation, testData.cryptoEconomic, testData.teeAttestation);
 
-    // Get registration file and save it
+    // Verify the registration file is serializable.
     const registrationFile = agent.getRegistrationFile();
     const registrationJson = JSON.stringify(registrationFile, null, 2);
-
-    // Save to file
-    const filename = `agent_registration_${agentId.replace(/:/g, '_')}.json`;
-    const filepath = path.join(__dirname, filename);
-    fs.writeFileSync(filepath, registrationJson);
+    const parsedRegistration = JSON.parse(registrationJson);
 
     expect(registrationFile.name).toBe(testData.name);
     expect(registrationFile.description).toBe(testData.description);
+    expect(parsedRegistration.name).toBe(testData.name);
   });
 
   it(
@@ -152,7 +151,7 @@ describeMaybe('Agent Registration with HTTP URI', () => {
         `0.${Math.floor(Math.random() * 6) + 30}`,
         false
       );
-      // agentWallet flow is tested separately (skipped if CLIENT_PRIVATE_KEY is not set)
+      // Wallet-signing flow is tested separately below with an ephemeral signer.
       agent.setENS(`${testData.ensName}.updated`, `1.${Math.floor(Math.random() * 10)}`);
       agent.setActive(false);
       agent.setX402Support(true);
@@ -165,9 +164,7 @@ describeMaybe('Agent Registration with HTTP URI', () => {
       const registrationFileUpdated = agent.getRegistrationFile();
       const registrationJsonUpdated = JSON.stringify(registrationFileUpdated, null, 2);
 
-      const filenameUpdated = `agent_registration_${agentId.replace(/:/g, '_')}_updated.json`;
-      const filepathUpdated = path.join(__dirname, filenameUpdated);
-      fs.writeFileSync(filepathUpdated, registrationJsonUpdated);
+      const parsedRegistrationUpdated = JSON.parse(registrationJsonUpdated);
 
       const updateTx = await agent.registerHTTP(mockUri);
       try {
@@ -181,6 +178,7 @@ describeMaybe('Agent Registration with HTTP URI', () => {
       }
 
       expect(agent.name).toBe(testData.name + ' UPDATED');
+      expect(parsedRegistrationUpdated.name).toBe(testData.name + ' UPDATED');
     },
     420_000
   );
@@ -208,19 +206,21 @@ describeMaybe('Agent Registration with HTTP URI', () => {
     expect(agent.agentId).toBe(agentId);
   });
 
-  itWalletMaybe('should set agent wallet on-chain (requires CLIENT_PRIVATE_KEY)', async () => {
+  it('should set agent wallet on-chain with an ephemeral signer', async () => {
     if (!agent?.agentId) {
       console.warn('[live-test] Skipping setWallet because the agent was not registered.');
       return;
     }
-    const secondWalletAddress = privateKeyToAccount(
-      (CLIENT_PRIVATE_KEY.startsWith('0x') ? CLIENT_PRIVATE_KEY : `0x${CLIENT_PRIVATE_KEY}`) as any
-    ).address;
+    const ephemeralKey = `0x${randomBytes(32).toString('hex')}` as `0x${string}`;
+    const secondWalletAddress = privateKeyToAccount(ephemeralKey).address;
     // 1.4.0 behavior: zero address is treated as "unset". Some deployments may set a non-zero default wallet.
     // We only assert that after setWallet (or no-op) the readback equals the intended wallet.
-    let walletTx;
+    let walletTx: any;
     try {
-      walletTx = await agent.setWallet(secondWalletAddress, { newWalletPrivateKey: CLIENT_PRIVATE_KEY });
+      walletTx = await agent.setWallet(secondWalletAddress, {
+        newWalletPrivateKey: ephemeralKey,
+        deadline: await liveSignatureDeadline(sdk),
+      });
     } catch (error) {
       if (isSkippableLiveError(error)) {
         console.warn(`[live-test] Skipping setWallet due to chain/RPC issue: ${String(error)}`);

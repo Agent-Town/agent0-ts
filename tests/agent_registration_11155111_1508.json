@@ -1,0 +1,41 @@
+{
+  "name": "Test Agent 6491",
+  "description": "Created at 1772459446",
+  "image": "https://example.com/image_6491.png",
+  "endpoints": [
+    {
+      "type": "MCP",
+      "value": "https://api.example.com/mcp/6491",
+      "meta": {
+        "version": "2025-06-11"
+      }
+    },
+    {
+      "type": "A2A",
+      "value": "https://api.example.com/a2a/6491.json",
+      "meta": {
+        "version": "0.35"
+      }
+    },
+    {
+      "type": "ENS",
+      "value": "test6491.eth",
+      "meta": {
+        "version": "1.3"
+      }
+    }
+  ],
+  "trustModels": [
+    "reputation",
+    "crypto-economic",
+    "tee-attestation"
+  ],
+  "owners": [],
+  "operators": [],
+  "active": true,
+  "x402support": false,
+  "metadata": {},
+  "updatedAt": 1772459463,
+  "agentId": "11155111:1508",
+  "agentURI": "https://example.com/agents/registration.json"
+}

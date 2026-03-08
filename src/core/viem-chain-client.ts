@@ -159,6 +159,38 @@ export class ViemChainClient implements ChainClient {
     throw new Error('Wallet did not return accounts from eth_requestAccounts');
   }
 
+  private async _assertConfiguredRpcChain(): Promise<void> {
+    const rpcChainId = await this.publicClient.getChainId();
+    if (rpcChainId !== this.chainId) {
+      throw new Error(
+        `RPC chainId mismatch: SDK configured for chainId=${this.chainId} but rpcUrl reports chainId=${rpcChainId}`
+      );
+    }
+  }
+
+  private async _getWalletChainIdBestEffort(): Promise<number | undefined> {
+    if (!this.walletClient) return undefined;
+    try {
+      const walletChainId = await (this.walletClient as any).getChainId?.();
+      if (typeof walletChainId === 'number') return walletChainId;
+    } catch {
+      // fall through
+    }
+
+    try {
+      const prov = (this.walletClient as any).transport?.value as EIP1193Provider | undefined;
+      if (!prov) return undefined;
+      const raw = await prov.request({ method: 'eth_chainId' });
+      if (typeof raw === 'string') {
+        const parsed = Number.parseInt(raw, 16);
+        if (Number.isFinite(parsed)) return parsed;
+      }
+    } catch {
+      // ignore and treat as unavailable
+    }
+    return undefined;
+  }
+
   async readContract<T = unknown>(args: {
     address: Address;
     abi: readonly unknown[];
@@ -192,6 +224,8 @@ export class ViemChainClient implements ChainClient {
       throw new Error('No signer available. Configure walletProvider (browser) or privateKey (server).');
     }
 
+    await this._assertConfiguredRpcChain();
+
     // Ensure account exists / is connected
     // IMPORTANT:
     // - If we have a local private key account, pass the ACCOUNT OBJECT so viem signs locally and uses eth_sendRawTransaction.
@@ -199,16 +233,12 @@ export class ViemChainClient implements ChainClient {
     const accountForViem = (this.account ?? ((await this.ensureAddress()) as unknown as ViemAddress)) as any;
 
     // Browser safety: if wallet is on the wrong chain, fail with a clear message.
-    try {
-      const walletChainId = await (this.walletClient as any).getChainId?.();
-      if (typeof walletChainId === 'number' && walletChainId !== this.chainId) {
-        throw new Error(
-          `Wallet chainId mismatch: expected chainId=${this.chainId}, got chainId=${walletChainId}. ` +
-            `Please switch the wallet network.`
-        );
-      }
-    } catch {
-      // If not supported, we rely on RPC errors or downstream handling.
+    const walletChainId = await this._getWalletChainIdBestEffort();
+    if (typeof walletChainId === 'number' && walletChainId !== this.chainId) {
+      throw new Error(
+        `Wallet chainId mismatch: expected chainId=${this.chainId}, got chainId=${walletChainId}. ` +
+          `Please switch the wallet network.`
+      );
     }
 
     const hash = (await (this.walletClient as any).writeContract({
@@ -229,6 +259,14 @@ export class ViemChainClient implements ChainClient {
   }): Promise<`0x${string}`> {
     if (!this.walletClient) {
       throw new Error('No signer available. Configure walletProvider (browser) or privateKey (server).');
+    }
+    await this._assertConfiguredRpcChain();
+    const walletChainId = await this._getWalletChainIdBestEffort();
+    if (typeof walletChainId === 'number' && walletChainId !== this.chainId) {
+      throw new Error(
+        `Wallet chainId mismatch: expected chainId=${this.chainId}, got chainId=${walletChainId}. ` +
+          `Please switch the wallet network.`
+      );
     }
     const accountForViem = (this.account ?? ((await this.ensureAddress()) as unknown as ViemAddress)) as any;
     const hash = (await (this.walletClient as any).sendTransaction({
@@ -370,4 +408,3 @@ export class ViemChainClient implements ChainClient {
     }) as `0x${string}`;
   }
 }
-

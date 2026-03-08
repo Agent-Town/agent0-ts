@@ -11,7 +11,12 @@ export * from './utils/index.js';
 
 // Export core classes
 export { SDK } from './core/sdk.js';
-export type { SDKConfig } from './core/sdk.js';
+export type {
+  SDKConfig,
+  BrowserPrivateKeyPolicy,
+  MetadataUpdatePolicy,
+  RegistrationIntegrityConfig,
+} from './core/sdk.js';
 export { Agent } from './core/agent.js';
 export { ViemChainClient } from './core/viem-chain-client.js';
 export type { ChainClient, TransactionOptions } from './core/chain-client.js';
@@ -21,10 +26,9 @@ export { SubgraphClient } from './core/subgraph-client.js';
 export { FeedbackManager } from './core/feedback-manager.js';
 export { EndpointCrawler } from './core/endpoint-crawler.js';
 export type { McpCapabilities, A2aCapabilities } from './core/endpoint-crawler.js';
-export { AgentIndexer } from './core/indexer.js';
+export { AgentIndexer, ENTITY_TYPE_HYDRATION_MAX } from './core/indexer.js';
 export { TransactionHandle } from './core/transaction-handle.js';
 export type { TransactionMined, TransactionWaitOptions } from './core/transaction-handle.js';
 
 // Export contract definitions
 export * from './core/contracts.js';
-

@@ -120,6 +120,8 @@ describe('SubgraphClient regressions', () => {
 
     const firstCall = request.mock.calls[0] as any[];
     const query = firstCall[0] as string;
-    expect(query).toContain('agentWallet: "0x00000000000000000000000000000000000000aa"');
+    const variables = firstCall[1] as any;
+    expect(query).toContain('$where');
+    expect(variables.where.agentWallet).toBe('0x00000000000000000000000000000000000000aa');
   });
 });

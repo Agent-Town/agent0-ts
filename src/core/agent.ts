@@ -7,9 +7,15 @@ import { privateKeyToAccount } from 'viem/accounts';
 import type {
   RegistrationFile,
   Endpoint,
+  EntityType,
 } from '../models/interfaces.js';
 import type { AgentId, Address, URI } from '../models/types.js';
 import { EndpointType, TrustModel } from '../models/enums.js';
+import type {
+  PermissionManifestRefV1,
+  PermissionManifestV1,
+  ProvenanceV1,
+} from '../models/permission-manifest.js';
 import type { SDK } from './sdk.js';
 import { EndpointCrawler } from './endpoint-crawler.js';
 import { parseAgentId } from '../utils/id-format.js';
@@ -33,7 +39,9 @@ export class Agent {
 
   constructor(private sdk: SDK, registrationFile: RegistrationFile) {
     this.registrationFile = registrationFile;
-    this._endpointCrawler = new EndpointCrawler(5000);
+    this._endpointCrawler = new EndpointCrawler(5000, (url, source) =>
+      this.sdk.validateOutboundUrl(url, source)
+    );
   }
 
   private async _waitForTransactionWithRetry(hash: `0x${string}`, timeoutMs: number): Promise<ChainReceipt> {
@@ -61,7 +69,7 @@ export class Agent {
     this._lastRegisteredEns = this.ensEndpoint;
   }
 
-  private async _updateDirtyMetadataOnChain(): Promise<Set<string>> {
+  private async _updateDirtyMetadataOnChain(strict: boolean = false): Promise<Set<string>> {
     const updatedKeys = new Set<string>();
     const metadataEntries = this._collectMetadataForRegistration();
     const { tokenId } = parseAgentId(this.registrationFile.agentId!);
@@ -82,7 +90,10 @@ export class Agent {
 
         await this._waitForTransactionWithRetry(txHash, TIMEOUTS.TRANSACTION_WAIT);
         updatedKeys.add(entry.metadataKey);
-      } catch {
+      } catch (error) {
+        if (strict) {
+          throw error;
+        }
         // Preserve dirty metadata for later retries and stop here.
         // Additional metadata writes would consume later nonces and typically
         // compound the delay after a timeout or revert.
@@ -95,7 +106,9 @@ export class Agent {
 
   private async _finalizeUriUpdate(agentURI: URI): Promise<RegistrationFile> {
     if (this._dirtyMetadata.size > 0) {
-      const updatedKeys = await this._updateDirtyMetadataOnChain();
+      const updatedKeys = await this._updateDirtyMetadataOnChain(
+        this.sdk.metadataUpdatePolicy === 'strict'
+      );
       for (const key of updatedKeys) {
         this._dirtyMetadata.delete(key);
       }
@@ -126,6 +139,10 @@ export class Agent {
 
   get image(): URI | undefined {
     return this.registrationFile.image;
+  }
+
+  get entityType(): EntityType {
+    return this.registrationFile.entityType || 'agent';
   }
 
   get mcpEndpoint(): string | undefined {
@@ -804,6 +821,32 @@ export class Agent {
     return this;
   }
 
+  setEntityType(type: EntityType): this {
+    this.registrationFile.entityType = type;
+    this.registrationFile.updatedAt = Math.floor(Date.now() / 1000);
+    return this;
+  }
+
+  setPermissionManifest(manifest: PermissionManifestV1 | PermissionManifestRefV1): this {
+    this.registrationFile.permissionManifest = manifest;
+    this.registrationFile.updatedAt = Math.floor(Date.now() / 1000);
+    return this;
+  }
+
+  getPermissionManifest(): PermissionManifestV1 | PermissionManifestRefV1 | undefined {
+    return this.registrationFile.permissionManifest;
+  }
+
+  setProvenance(provenance: ProvenanceV1): this {
+    this.registrationFile.provenance = provenance;
+    this.registrationFile.updatedAt = Math.floor(Date.now() / 1000);
+    return this;
+  }
+
+  getProvenance(): ProvenanceV1 | undefined {
+    return this.registrationFile.provenance;
+  }
+
   setTrust(
     reputation: boolean = false,
     cryptoEconomic: boolean = false,
@@ -1134,7 +1177,6 @@ export class Agent {
 
     return this.registrationFile;
   }
-
   private _collectMetadataForRegistration(): Array<{ metadataKey: string; metadataValue: Hex }> {
     const entries: Array<{ metadataKey: string; metadataValue: Hex }> = [];
 

@@ -8,7 +8,10 @@ import type { AgentId, ChainId } from '../models/types.js';
 import { SubgraphClient } from './subgraph-client.js';
 import { SemanticSearchClient } from './semantic-search-client.js';
 import { normalizeAddress } from '../utils/validation.js';
+import { IPFS_GATEWAYS, TIMEOUTS } from '../utils/constants.js';
 import { DEFAULT_SUBGRAPH_URLS } from './contracts.js';
+
+export const ENTITY_TYPE_HYDRATION_MAX = 200;
 
 // Internal-only meta type kept temporarily while legacy helpers are being removed.
 type SearchResultMeta = {
@@ -29,7 +32,8 @@ export class AgentIndexer {
   constructor(
     private subgraphClient?: SubgraphClient,
     private subgraphUrlOverrides?: Record<ChainId, string>,
-    private readonly defaultChainId?: ChainId
+    private readonly defaultChainId?: ChainId,
+    private readonly outboundUrlValidator?: (url: string, source: string) => void
   ) {}
 
   /**
@@ -304,6 +308,98 @@ export class AgentIndexer {
     return hex;
   }
 
+  private _normalizeEntityType(type: string | undefined): string {
+    const value = typeof type === 'string' ? type.trim() : '';
+    return value.length > 0 ? value : 'agent';
+  }
+
+  private async _readRegistrationJson(uri: string): Promise<Record<string, unknown> | null> {
+    if (!uri || typeof uri !== 'string') return null;
+
+    const fetchJson = async (url: string): Promise<Record<string, unknown> | null> => {
+      const response = await fetch(url, {
+        signal: AbortSignal.timeout(TIMEOUTS.IPFS_GATEWAY),
+      });
+      if (!response.ok) return null;
+      const data: unknown = await response.json();
+      if (typeof data !== 'object' || data === null || Array.isArray(data)) return null;
+      return data as Record<string, unknown>;
+    };
+
+    if (uri.startsWith('ipfs://')) {
+      const cid = uri.slice(7);
+      for (const gateway of IPFS_GATEWAYS) {
+        try {
+          const data = await fetchJson(`${gateway}${cid}`);
+          if (data) return data;
+        } catch {
+          continue;
+        }
+      }
+      return null;
+    }
+
+    if (uri.startsWith('http://') || uri.startsWith('https://')) {
+      try {
+        this.outboundUrlValidator?.(uri, 'indexer-registration-read');
+        return await fetchJson(uri);
+      } catch {
+        return null;
+      }
+    }
+
+    return null;
+  }
+
+  private async _hydrateEntityTypeForAgent(agent: AgentSummary): Promise<string> {
+    if (agent.entityType && typeof agent.entityType === 'string') {
+      return this._normalizeEntityType(agent.entityType);
+    }
+
+    if (!agent.agentURI) {
+      return 'agent';
+    }
+
+    const raw = await this._readRegistrationJson(agent.agentURI);
+    if (!raw || typeof raw.entityType !== 'string') {
+      return 'agent';
+    }
+    return this._normalizeEntityType(raw.entityType);
+  }
+
+  private async _hydrateEntityTypes(agents: AgentSummary[], concurrency: number = 10): Promise<void> {
+    const queue = agents.filter((a) => !a.entityType || typeof a.entityType !== 'string');
+    if (queue.length === 0) return;
+
+    if (queue.length > ENTITY_TYPE_HYDRATION_MAX) {
+      throw new Error(
+        `ENTITY_TYPE_FILTER_TOO_BROAD: candidate set ${queue.length} exceeds ${ENTITY_TYPE_HYDRATION_MAX}`
+      );
+    }
+
+    let idx = 0;
+    const workers = new Array(Math.min(concurrency, queue.length)).fill(null).map(async () => {
+      while (idx < queue.length) {
+        const current = queue[idx];
+        idx += 1;
+        const type = await this._hydrateEntityTypeForAgent(current);
+        current.entityType = type;
+      }
+    });
+
+    await Promise.all(workers);
+  }
+
+  private async _applyEntityTypeFilter(agents: AgentSummary[], filters: SearchFilters): Promise<AgentSummary[]> {
+    if (!filters.entityType) return agents;
+
+    const requested = Array.isArray(filters.entityType) ? filters.entityType : [filters.entityType];
+    const wanted = new Set(requested.map((type) => this._normalizeEntityType(String(type))));
+
+    await this._hydrateEntityTypes(agents);
+    return agents.filter((agent) => wanted.has(this._normalizeEntityType(agent.entityType)));
+  }
+
   private async _prefilterByMetadata(filters: SearchFilters, chains: ChainId[]): Promise<Record<number, string[]> | undefined> {
     const key = filters.hasMetadataKey ?? filters.metadataValue?.key;
     if (!key) return undefined;
@@ -575,15 +671,16 @@ export class AgentIndexer {
     const failedChains = results.filter((r) => r.status !== 'success').map((r) => r.chainId);
 
     const merged = results.flatMap((r) => r.items || []);
-    merged.sort((a, b) => this._compareAgents(a, b, field, direction));
+    const filteredByEntityType = await this._applyEntityTypeFilter(merged, filters);
+    filteredByEntityType.sort((a, b) => this._compareAgents(a, b, field, direction));
 
     return {
-      items: merged,
+      items: filteredByEntityType,
             meta: {
         chains,
         successfulChains,
         failedChains,
-              totalResults: merged.length,
+              totalResults: filteredByEntityType.length,
               timing: { totalMs: 0 },
             },
           };
@@ -662,18 +759,20 @@ export class AgentIndexer {
       }
     }
 
+    const filteredByEntityType = await this._applyEntityTypeFilter(fetched, filters);
+
     // Default sort for keyword is semanticScore desc
     const sortField = options.sort && options.sort.length > 0 ? field : 'semanticScore';
     const sortDir = options.sort && options.sort.length > 0 ? direction : 'desc';
-    fetched.sort((a, b) => this._compareAgents(a, b, sortField, sortDir));
+    filteredByEntityType.sort((a, b) => this._compareAgents(a, b, sortField, sortDir));
 
     return {
-      items: fetched,
+      items: filteredByEntityType,
       meta: {
         chains,
         successfulChains,
         failedChains,
-        totalResults: fetched.length,
+        totalResults: filteredByEntityType.length,
         timing: { totalMs: 0 },
       },
     };
@@ -699,6 +798,7 @@ export class AgentIndexer {
       active,
       x402support,
       chains,
+      entityType,
     } = params;
 
     return agents.filter(agent => {
@@ -794,6 +894,15 @@ export class AgentIndexer {
       // Filter by x402support (flattened from registrationFile)
       if (x402support !== undefined && agent.x402support !== x402support) {
         return false;
+      }
+
+      if (entityType) {
+        const allowed = Array.isArray(entityType) ? entityType : [entityType];
+        const normalizedAgent = this._normalizeEntityType(agent.entityType);
+        const normalizedAllowed = allowed.map((value) => this._normalizeEntityType(String(value)));
+        if (!normalizedAllowed.includes(normalizedAgent)) {
+          return false;
+        }
       }
 
       // Filter by chain (only if chains is an array, not 'all')

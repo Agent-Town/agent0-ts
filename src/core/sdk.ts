@@ -3,10 +3,10 @@
  */
 import type {
   AgentSummary,
+  CreateEntityInput,
   Feedback,
   SearchFeedbackParams,
   RegistrationFile,
-  Endpoint,
   FeedbackFileInput,
   SearchOptions,
   FeedbackSearchFilters,
@@ -14,10 +14,11 @@ import type {
   SearchFilters,
 } from '../models/interfaces.js';
 import type { AgentId, ChainId, Address, URI } from '../models/types.js';
-import { EndpointType, TrustModel } from '../models/enums.js';
+import { TrustModel } from '../models/enums.js';
 import { formatAgentId, parseAgentId } from '../utils/id-format.js';
 import { IPFS_GATEWAYS, TIMEOUTS } from '../utils/constants.js';
 import { assertLoadableAgentUri, transformRegistrationFile } from '../utils/index.js';
+import { enforceOutboundUrlPolicy, type OutboundUrlPolicy } from '../utils/outbound-url-policy.js';
 import type { ChainClient, EIP1193Provider as Eip1193Provider } from './chain-client.js';
 import { ViemChainClient } from './viem-chain-client.js';
 import { IPFSClient, type IPFSClientConfig } from './ipfs-client.js';
@@ -32,6 +33,23 @@ import {
   IDENTITY_REGISTRY_ABI,
   REPUTATION_REGISTRY_ABI,
 } from './contracts.js';
+import { hexToString } from 'viem';
+
+export type BrowserPrivateKeyPolicy = 'allow' | 'warn' | 'deny';
+export type MetadataUpdatePolicy = 'best-effort' | 'strict';
+
+export interface RegistrationIntegrityConfig {
+  /**
+   * - off: do not verify registration payload hash
+   * - if-present: verify only if the metadata key exists
+   * - required: fail if metadata key is absent
+   */
+  mode?: 'off' | 'if-present' | 'required';
+  /**
+   * Metadata key containing expected SHA-256 hash (hex string, e.g. 0xabc...).
+   */
+  hashMetadataKey?: string;
+}
 
 export interface SDKConfig {
   chainId: ChainId;
@@ -56,6 +74,11 @@ export interface SDKConfig {
   // Subgraph configuration
   subgraphUrl?: string;
   subgraphOverrides?: Record<ChainId, string>;
+  // Security hardening (all optional and backward compatible)
+  outboundUrlPolicy?: OutboundUrlPolicy;
+  registrationIntegrity?: RegistrationIntegrityConfig;
+  browserPrivateKeyPolicy?: BrowserPrivateKeyPolicy;
+  metadataUpdatePolicy?: MetadataUpdatePolicy;
 }
 
 /**
@@ -71,13 +94,37 @@ export class SDK {
   private readonly _chainId: ChainId;
   private readonly _subgraphUrls: Record<ChainId, string> = {};
   private readonly _hasSignerConfig: boolean;
+  private readonly _outboundUrlPolicy?: OutboundUrlPolicy;
+  private readonly _registrationIntegrity: Required<RegistrationIntegrityConfig>;
+  private readonly _metadataUpdatePolicy: MetadataUpdatePolicy;
 
   constructor(config: SDKConfig) {
     this._chainId = config.chainId;
+    this._outboundUrlPolicy = config.outboundUrlPolicy;
+    this._registrationIntegrity = {
+      mode: config.registrationIntegrity?.mode ?? 'off',
+      hashMetadataKey: config.registrationIntegrity?.hashMetadataKey ?? 'registration.sha256',
+    };
+    this._metadataUpdatePolicy = config.metadataUpdatePolicy ?? 'best-effort';
 
     // Initialize Chain client (viem-only)
     const privateKey = config.privateKey ?? config.signer;
     this._hasSignerConfig = Boolean(privateKey || config.walletProvider);
+    if (privateKey && typeof window !== 'undefined') {
+      const browserKeyPolicy = config.browserPrivateKeyPolicy ?? 'warn';
+      if (browserKeyPolicy === 'deny') {
+        throw new Error(
+          'Using privateKey in browser context is blocked by browserPrivateKeyPolicy=deny. ' +
+            'Use walletProvider for browser writes.'
+        );
+      }
+      if (browserKeyPolicy === 'warn') {
+        console.warn(
+          '[agent0-sdk] privateKey detected in browser context. ' +
+            'This is high risk; prefer walletProvider-based signing.'
+        );
+      }
+    }
     this._chainClient = new ViemChainClient({
       chainId: config.chainId,
       rpcUrl: config.rpcUrl,
@@ -110,7 +157,12 @@ export class SDK {
     }
 
     // Initialize indexer
-    this._indexer = new AgentIndexer(this._subgraphClient, this._subgraphUrls, this._chainId);
+    this._indexer = new AgentIndexer(
+      this._subgraphClient,
+      this._subgraphUrls,
+      this._chainId,
+      (url, source) => this.validateOutboundUrl(url, source)
+    );
 
     // Initialize IPFS client
     if (config.ipfs) {
@@ -233,27 +285,59 @@ export class SDK {
     return !this._hasSignerConfig;
   }
 
+  get metadataUpdatePolicy(): MetadataUpdatePolicy {
+    return this._metadataUpdatePolicy;
+  }
+
+  get outboundUrlPolicy(): OutboundUrlPolicy | undefined {
+    return this._outboundUrlPolicy;
+  }
+
+  validateOutboundUrl(url: string, source: string = 'sdk'): void {
+    enforceOutboundUrlPolicy(url, this._outboundUrlPolicy, source);
+  }
+
   // Agent lifecycle methods
 
   /**
    * Create a new agent (off-chain object in memory)
    */
   createAgent(name: string, description: string, image?: URI): Agent {
-    const registrationFile: RegistrationFile = {
-      name,
-      description,
-      image,
-      endpoints: [],
-      // Default trust model: reputation (if caller doesn't set one explicitly).
-      trustModels: [TrustModel.REPUTATION],
-      owners: [],
-      operators: [],
-      active: false,
-      x402support: false,
-      metadata: {},
-      updatedAt: Math.floor(Date.now() / 1000),
-    };
+    const registrationFile = this._createBaseRegistrationFile(name, description, image);
     return new Agent(this, registrationFile);
+  }
+
+  /**
+   * Create a new entity (off-chain object in memory)
+   */
+  createEntity(input: CreateEntityInput): Agent {
+    const registrationFile = this._createBaseRegistrationFile(input.name, input.description, input.image);
+    registrationFile.entityType = input.entityType;
+    return new Agent(this, registrationFile);
+  }
+
+  createHuman(name: string, description: string, image?: URI): Agent {
+    return this.createEntity({ entityType: 'human', name, description, image });
+  }
+
+  createTool(name: string, description: string, image?: URI): Agent {
+    return this.createEntity({ entityType: 'tool', name, description, image });
+  }
+
+  createSkill(name: string, description: string, image?: URI): Agent {
+    return this.createEntity({ entityType: 'skill', name, description, image });
+  }
+
+  createExperience(name: string, description: string, image?: URI): Agent {
+    return this.createEntity({ entityType: 'experience', name, description, image });
+  }
+
+  createHouse(name: string, description: string, image?: URI): Agent {
+    return this.createEntity({ entityType: 'house', name, description, image });
+  }
+
+  createOrganization(name: string, description: string, image?: URI): Agent {
+    return this.createEntity({ entityType: 'organization', name, description, image });
   }
 
   /**
@@ -288,7 +372,8 @@ export class SDK {
       // Agent registered but no URI set yet - create empty registration file
       registrationFile = this._createEmptyRegistrationFile();
     } else {
-      registrationFile = await this._loadRegistrationFile(agentURI);
+      const expectedHash = await this._resolveExpectedRegistrationHash(tokenId);
+      registrationFile = await this._loadRegistrationFile(agentURI, expectedHash);
     }
 
     registrationFile.agentId = agentId;
@@ -527,6 +612,23 @@ export class SDK {
     return this._feedbackManager.getReputationSummary(agentId, tag1, tag2);
   }
 
+  private _createBaseRegistrationFile(name: string, description: string, image?: URI): RegistrationFile {
+    return {
+      name,
+      description,
+      image,
+      endpoints: [],
+      // Default trust model: reputation (if caller doesn't set one explicitly).
+      trustModels: [TrustModel.REPUTATION],
+      owners: [],
+      operators: [],
+      active: false,
+      x402support: false,
+      metadata: {},
+      updatedAt: Math.floor(Date.now() / 1000),
+    };
+  }
+
   /**
    * Create an empty registration file structure
    */
@@ -548,33 +650,79 @@ export class SDK {
   /**
    * Private helper methods
    */
-  private async _loadRegistrationFile(tokenUri: string): Promise<RegistrationFile> {
+  private _normalizeHashHex(input: string): string {
+    const normalized = input.trim().toLowerCase();
+    if (!/^0x[0-9a-f]{64}$/.test(normalized)) {
+      throw new Error(`Invalid SHA-256 hash format: ${input}`);
+    }
+    return normalized;
+  }
+
+  private async _sha256HexUtf8(input: string): Promise<string> {
+    if (!globalThis.crypto?.subtle) {
+      throw new Error('SHA-256 verification requires Web Crypto (globalThis.crypto.subtle)');
+    }
+    const bytes = new TextEncoder().encode(input);
+    const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
+    const arr = new Uint8Array(digest);
+    let hex = '0x';
+    for (const b of arr) hex += b.toString(16).padStart(2, '0');
+    return hex;
+  }
+
+  private async _resolveExpectedRegistrationHash(tokenId: number): Promise<string | undefined> {
+    const mode = this._registrationIntegrity.mode;
+    if (mode === 'off') return undefined;
+
+    const metadataKey = this._registrationIntegrity.hashMetadataKey;
+    const raw = await this._chainClient.readContract<`0x${string}`>({
+      address: this.identityRegistryAddress(),
+      abi: IDENTITY_REGISTRY_ABI,
+      functionName: 'getMetadata',
+      args: [BigInt(tokenId), metadataKey],
+    });
+
+    if (!raw || raw === '0x') {
+      if (mode === 'required') {
+        throw new Error(
+          `Missing required registration hash metadata key "${metadataKey}" for tokenId=${tokenId}`
+        );
+      }
+      return undefined;
+    }
+
+    const decoded = hexToString(raw);
+    return this._normalizeHashHex(decoded);
+  }
+
+  private async _loadRegistrationFile(
+    tokenUri: string,
+    expectedSha256?: string
+  ): Promise<RegistrationFile> {
     try {
-      // Fetch from IPFS or HTTP
-      let rawData: unknown;
       if (!tokenUri || tokenUri.trim() === '') {
         return this._createEmptyRegistrationFile();
       }
 
       assertLoadableAgentUri(tokenUri, 'agent registration URI');
-
+      let rawText: string;
       if (tokenUri.startsWith('ipfs://')) {
         const cid = tokenUri.slice(7);
         if (this._ipfsClient) {
-          // Use IPFS client if available
-          rawData = await this._ipfsClient.getJson(cid);
+          rawText = await this._ipfsClient.get(cid);
         } else {
           // Fallback to HTTP gateways if no IPFS client configured
           const gateways = IPFS_GATEWAYS.map((gateway) => `${gateway}${cid}`);
 
           let fetched = false;
+          let fetchedText = '';
           for (const gateway of gateways) {
             try {
               const response = await fetch(gateway, {
                 signal: AbortSignal.timeout(TIMEOUTS.IPFS_GATEWAY),
               });
               if (response.ok) {
-                rawData = await response.json();
+                fetchedText = await response.text();
                 fetched = true;
                 break;
               }
@@ -586,15 +734,36 @@ export class SDK {
           if (!fetched) {
             throw new Error('Failed to retrieve data from all IPFS gateways');
           }
+          rawText = fetchedText;
         }
       } else if (tokenUri.startsWith('http://') || tokenUri.startsWith('https://')) {
+        this.validateOutboundUrl(tokenUri, 'registration-load');
         const response = await fetch(tokenUri);
         if (!response.ok) {
           throw new Error(`Failed to fetch registration file: HTTP ${response.status}`);
         }
-        rawData = await response.json();
+        rawText = await response.text();
+      } else if (tokenUri.startsWith('data:')) {
+        // Data URIs are not supported
+        throw new Error(`Data URIs are not supported. Expected HTTP(S) or IPFS URI, got: ${tokenUri}`);
       } else {
         throw new Error(`Unsupported URI scheme for agent registration URI: ${tokenUri}`);
+      }
+
+      if (expectedSha256) {
+        const computedSha256 = (await this._sha256HexUtf8(rawText)).toLowerCase();
+        if (computedSha256 !== expectedSha256.toLowerCase()) {
+          throw new Error(
+            `Registration hash mismatch: expected ${expectedSha256}, computed ${computedSha256}`
+          );
+        }
+      }
+
+      let rawData: unknown;
+      try {
+        rawData = JSON.parse(rawText);
+      } catch (error) {
+        throw new Error(`Invalid registration JSON: ${error instanceof Error ? error.message : String(error)}`);
       }
 
       // Validate rawData is an object before transformation
@@ -608,7 +777,6 @@ export class SDK {
       throw new Error(`Failed to load registration file: ${errorMessage}`);
     }
   }
-
   // Expose clients for advanced usage
   get chainClient(): ChainClient {
     return this._chainClient;
