@@ -6,8 +6,8 @@
  * 2. Browser: using an EIP-1193 wallet provider (ERC-6963)
  */
 
-import './_env';
-import { SDK } from '../src/index';
+import './_env.js';
+import { SDK } from '../src/index.js';
 import { discoverEip6963Providers, connectEip1193 } from '../src/browser/eip6963.js';
 
 async function main() {

@@ -22,9 +22,9 @@
  * - POLL_INTERVAL_MS: poll interval (default 5000)
  */
 
-import './_env';
-import { SDK } from '../src/index';
-import { formatFeedbackId, parseAgentId } from '../src/utils/id-format';
+import './_env.js';
+import { SDK, type Feedback } from '../src/index.js';
+import { formatFeedbackId, parseAgentId } from '../src/utils/id-format.js';
 
 function requireEnv(name: string): string {
   const v = process.env[name];
@@ -112,7 +112,7 @@ async function main() {
   const maxAttempts = Math.max(1, Math.ceil((maxPollSeconds * 1000) / pollIntervalMs));
 
   console.log(`\nWaiting for subgraph indexing (up to ${maxPollSeconds}s, every ${pollIntervalMs}ms)...`);
-  let indexed: any[] = [];
+  let indexed: Feedback[] = [];
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     indexed = await sdk.searchFeedback({ agentId, reviewers: [reviewer] });
     const foundEndpoints = new Set(indexed.map((f) => f.endpoint).filter(Boolean));
@@ -170,5 +170,4 @@ main().catch((err) => {
   console.error(err);
   process.exitCode = 1;
 });
-
 

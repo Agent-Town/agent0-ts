@@ -24,7 +24,7 @@
  *   CHAIN_ID (defaults to 11155111 / Sepolia)
  */
 
-import './_env';
+import './_env.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';

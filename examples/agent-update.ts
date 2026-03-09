@@ -8,8 +8,8 @@
  * 4. Update the registration file on-chain (re-register)
  */
 
-import './_env';
-import { SDK } from '../src/index';
+import './_env.js';
+import { SDK } from '../src/index.js';
 
 async function main() {
   const rpcUrl = process.env.RPC_URL;
@@ -45,12 +45,14 @@ async function main() {
   agent.setActive(true);
 
   console.log('Registering a new agent (setup for this example)...');
-  const registration = await agent.registerIPFS();
+  const registrationTx = await agent.registerIPFS();
+  const { result: registration } = await registrationTx.waitConfirmed();
   if (!registration.agentId) {
     throw new Error('Registration failed: missing agentId');
   }
 
   const agentId = registration.agentId;
+  console.log(`Registration tx hash: ${registrationTx.hash}`);
   console.log(`Registered agentId: ${agentId}`);
 
   // 2) Load it back
@@ -86,9 +88,10 @@ async function main() {
 
   // 4) Re-register with updated information
   console.log('Updating agent registration...');
-  const updatedRegistrationFile = await loaded.registerIPFS();
+  const updatedRegistrationTx = await loaded.registerIPFS();
+  const { result: updatedRegistrationFile } = await updatedRegistrationTx.waitConfirmed();
+  console.log(`Update tx hash: ${updatedRegistrationTx.hash}`);
   console.log(`Agent updated. New URI: ${updatedRegistrationFile.agentURI}`);
 }
 
 main().catch(console.error);
-

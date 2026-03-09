@@ -20,6 +20,7 @@
     "generate:taxonomies": "node ./scripts/generate-taxonomies.mjs",
     "prebuild": "npm run codegen && npm run generate:taxonomies",
     "build": "tsc",
+    "check:examples": "tsc -p tsconfig.examples.json",
     "prepack": "npm run build",
     "build:watch": "tsc --watch",
     "pretest": "npm run generate:taxonomies",

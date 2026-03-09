@@ -28,9 +28,9 @@ async function main() {
 
   // Example write: create agent + register via HTTP (no IPFS required)
   const agent = sdk.createAgent('Browser Agent', 'Created from a browser wallet');
-  const reg = await agent.registerHTTP('https://example.com/agents/browser-agent.json');
+  const regTx = await agent.registerHTTP('https://example.com/agents/browser-agent.json');
+  const { result: reg } = await regTx.waitConfirmed();
   console.log('Registered agent:', reg.agentId);
 }
 
 main().catch(console.error);
-

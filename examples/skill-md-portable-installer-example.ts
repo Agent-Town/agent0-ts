@@ -30,7 +30,7 @@
  *   CLAUDE_CODE_SKILLS_DIR (for claude-code install target)
  */
 
-import './_env';
+import './_env.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { execFile } from 'node:child_process';

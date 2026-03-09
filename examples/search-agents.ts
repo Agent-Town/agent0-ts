@@ -7,8 +7,8 @@
  * 3. Get agent summaries
  */
 
-import './_env';
-import { SDK } from '../src/index';
+import './_env.js';
+import { SDK } from '../src/index.js';
 
 async function main() {
   // Initialize SDK (read-only mode is fine for searching)
@@ -75,4 +75,3 @@ async function main() {
 }
 
 main().catch(console.error);
-

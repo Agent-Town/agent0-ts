@@ -10,8 +10,8 @@
  * No off-chain feedback file is created/uploaded because the SDK is configured without IPFS.
  */
 
-import './_env';
-import { SDK } from '../src/index';
+import './_env.js';
+import { SDK } from '../src/index.js';
 
 async function main() {
   const rpcUrl = process.env.RPC_URL;
@@ -60,4 +60,3 @@ async function main() {
 }
 
 main().catch(console.error);
-

@@ -7,8 +7,8 @@
  * 3. Verify new owner on-chain
  */
 
-import './_env';
-import { SDK } from '../src/index';
+import './_env.js';
+import { SDK } from '../src/index.js';
 import { privateKeyToAccount, generatePrivateKey } from 'viem/accounts';
 
 async function main() {
@@ -45,11 +45,13 @@ async function main() {
   agent.setActive(true);
 
   console.log('Registering a new agent (setup for transfer)...');
-  const registration = await agent.registerIPFS();
+  const registrationTx = await agent.registerIPFS();
+  const { result: registration } = await registrationTx.waitConfirmed();
   if (!registration.agentId) {
     throw new Error('Registration failed: missing agentId');
   }
   const agentId = registration.agentId;
+  console.log(`Registration tx hash: ${registrationTx.hash}`);
   console.log(`Registered agentId: ${agentId}`);
 
   // Destination owner (provide NEW_OWNER to make this deterministic)
@@ -60,16 +62,13 @@ async function main() {
 
   // Transfer agent
   console.log(`\nTransferring agent ${agentId} to ${newOwner}...`);
-  const result = await sdk.transferAgent(agentId, newOwner);
+  const transferTx = await sdk.transferAgent(agentId, newOwner);
+  const { result } = await transferTx.waitConfirmed();
   console.log(`Transfer completed!`);
   console.log(`Transaction hash: ${result.txHash}`);
   console.log(`From: ${result.from}`);
   console.log(`To: ${result.to}`);
   console.log(`Agent ID: ${result.agentId}`);
-
-  // Verify new owner
-  // Note: transfers are asynchronous; wait for the tx to be mined before reading ownerOf.
-  await sdk.chainClient.waitForTransaction({ hash: result.txHash as any });
 
   console.log('\nVerifying new owner...');
   let newOwnerAddress = await sdk.getAgentOwner(agentId);
@@ -88,4 +87,3 @@ async function main() {
 }
 
 main().catch(console.error);
-

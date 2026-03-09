@@ -8,8 +8,8 @@
  * 4. Register the agent on-chain with IPFS
  */
 
-import './_env';
-import { SDK } from '../src/index';
+import './_env.js';
+import { SDK } from '../src/index.js';
 
 async function main() {
   const rpcUrl = process.env.RPC_URL;
@@ -70,7 +70,9 @@ async function main() {
 
   // Register agent on-chain with IPFS
   console.log('Registering agent...');
-  const registrationFile = await agent.registerIPFS();
+  const registrationTx = await agent.registerIPFS();
+  const { result: registrationFile } = await registrationTx.waitConfirmed();
+  console.log(`Registration tx hash: ${registrationTx.hash}`);
   console.log(`Agent registered with ID: ${registrationFile.agentId}`);
   console.log(`Registration file URI: ${registrationFile.agentURI}`);
 

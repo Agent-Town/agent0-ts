@@ -8,9 +8,9 @@
  * 4. Append response to feedback
  */
 
-import './_env';
-import { SDK } from '../src/index';
-import { formatFeedbackId } from '../src/utils/id-format';
+import './_env.js';
+import { SDK } from '../src/index.js';
+import { formatFeedbackId } from '../src/utils/id-format.js';
 
 async function main() {
   const rpcUrl = process.env.RPC_URL;
@@ -112,4 +112,3 @@ async function main() {
 }
 
 main().catch(console.error);
-
