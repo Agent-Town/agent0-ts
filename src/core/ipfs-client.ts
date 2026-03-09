@@ -1,18 +1,33 @@
 /**
  * IPFS client for decentralized storage with support for multiple providers:
- * - Local IPFS nodes (via kubo-rpc-client)
+ * - Remote Kubo/IPFS daemon (via kubo-rpc-client)
+ * - Embedded Helia node (via helia + @helia/unixfs)
  * - Pinata IPFS pinning service
- * - Filecoin Pin service
  */
 
-import type { KuboRPCClient } from 'kubo-rpc-client';
+import type { Helia } from 'helia';
+import type { UnixFS } from '@helia/unixfs';
+import type { CID as CIDType } from 'multiformats/cid';
+import type { create as createKuboClient } from 'kubo-rpc-client';
 import type { RegistrationFile } from '../models/interfaces.js';
 import { IPFS_GATEWAYS, TIMEOUTS } from '../utils/constants.js';
-import { parseAgentId } from '../utils/id-format.js';
 import { firstSuccessful, transformRegistrationFile } from '../utils/index.js';
+import { buildErc8004RegistrationJson } from '../utils/registration-json.js';
 
 export interface IPFSClientConfig {
-  url?: string; // IPFS node URL (e.g., "http://localhost:5001")
+  /**
+   * URL for a running Kubo daemon HTTP RPC API.
+   *
+   * Examples:
+   * - "http://localhost:5001" (default path will be resolved)
+   * - "http://localhost:5001/api/v0"
+   */
+  url?: string;
+  /**
+   * If true, run an embedded Helia node in-process (no daemon required).
+   */
+  embeddedHeliaEnabled?: boolean;
+  filecoinPinEnabled?: boolean;
   pinataEnabled?: boolean;
   pinataJwt?: string;
 }
@@ -21,9 +36,12 @@ export interface IPFSClientConfig {
  * Client for IPFS operations supporting multiple providers
  */
 export class IPFSClient {
-  private provider: 'pinata' | 'node';
+  private provider: 'pinata' | 'kubo' | 'helia';
   private config: IPFSClientConfig;
-  private client?: KuboRPCClient;
+  private kubo?: ReturnType<typeof createKuboClient>;
+  private helia?: Helia;
+  private heliaFs?: UnixFS;
+  private CID?: { parse: (input: string) => CIDType };
 
   constructor(config: IPFSClientConfig) {
     this.config = config;
@@ -35,23 +53,45 @@ export class IPFSClient {
       this._verifyPinataJwt();
     } else if (legacyConfig.filecoinPinEnabled) {
       throw new Error(
-        "Filecoin Pin is not yet supported in the TypeScript SDK. Use 'pinata' or 'node'."
+        "Filecoin Pin is not yet supported in the TypeScript SDK. Use 'pinata', 'node', or 'helia'."
       );
+    } else if (config.embeddedHeliaEnabled) {
+      this.provider = 'helia';
+      // Lazy initialization - Helia node will be created on first use
     } else if (config.url) {
-      this.provider = 'node';
+      this.provider = 'kubo';
       // Lazy initialization - client will be created on first use
     } else {
-      throw new Error('No IPFS provider configured. Specify url or pinataEnabled.');
+      throw new Error(
+        'No IPFS provider configured. Specify url (Kubo RPC), embeddedHeliaEnabled, or pinataEnabled.'
+      );
     }
   }
 
   /**
    * Initialize Kubo RPC client (lazy, only when needed)
    */
-  private async _ensureClient(): Promise<void> {
-    if (this.provider === 'node' && !this.client && this.config.url) {
+  private async _ensureKubo(): Promise<void> {
+    if (this.provider === 'kubo' && !this.kubo && this.config.url) {
       const { create } = await import('kubo-rpc-client');
-      this.client = create({ url: this.config.url });
+      this.kubo = create(this.config.url);
+    }
+  }
+
+  /**
+   * Initialize embedded Helia node (lazy, only when needed)
+   */
+  private async _ensureHelia(): Promise<void> {
+    if (this.provider === 'helia' && !this.helia) {
+      const [{ createHelia }, { unixfs }, { CID }] = await Promise.all([
+        import('helia'),
+        import('@helia/unixfs'),
+        import('multiformats/cid'),
+      ]);
+
+      this.helia = await createHelia();
+      this.heliaFs = unixfs(this.helia);
+      this.CID = CID;
     }
   }
 
@@ -165,14 +205,25 @@ export class IPFSClient {
   /**
    * Pin data to local IPFS node
    */
-  private async _pinToLocalIpfs(data: string): Promise<string> {
-    await this._ensureClient();
-    if (!this.client) {
-      throw new Error('No IPFS client available');
+  private async _pinToKubo(data: string): Promise<string> {
+    await this._ensureKubo();
+    if (!this.kubo) {
+      throw new Error('No Kubo RPC client available');
     }
 
-    const result = await this.client.add(data);
+    const result = await this.kubo.add(data);
     return result.cid.toString();
+  }
+
+  private async _addToHelia(data: string): Promise<string> {
+    await this._ensureHelia();
+    if (!this.heliaFs) {
+      throw new Error('No Helia UnixFS available');
+    }
+
+    const bytes = new TextEncoder().encode(data);
+    const cid = await this.heliaFs.addBytes(bytes);
+    return cid.toString();
   }
 
   /**
@@ -182,9 +233,11 @@ export class IPFSClient {
     try {
       if (this.provider === 'pinata') {
         return await this._pinToPinata(data, fileName);
-      } else {
-        return await this._pinToLocalIpfs(data);
       }
+      if (this.provider === 'kubo') {
+        return await this._pinToKubo(data);
+      }
+      return await this._addToHelia(data);
     } catch (error) {
       throw error;
     }
@@ -208,16 +261,26 @@ export class IPFSClient {
 
     if (this.provider === 'pinata') {
       return this._pinToPinata(data, fileName);
-    } else {
-      await this._ensureClient();
-      if (!this.client) {
-        throw new Error('No IPFS client available');
+    }
+    if (this.provider === 'kubo') {
+      await this._ensureKubo();
+      if (!this.kubo) {
+        throw new Error('No Kubo RPC client available');
       }
-      // For local IPFS, add file directly
+
       const fileContent = fs.readFileSync(filepath);
-      const result = await this.client.add(fileContent);
+      const result = await this.kubo.add(fileContent);
       return result.cid.toString();
     }
+
+    await this._ensureHelia();
+    if (!this.heliaFs) {
+      throw new Error('No Helia UnixFS available');
+    }
+
+    const fileContent = fs.readFileSync(filepath);
+    const cid = await this.heliaFs.addBytes(fileContent);
+    return cid.toString();
   }
 
   /**
@@ -249,28 +312,43 @@ export class IPFSClient {
       } catch {
         throw new Error('Failed to retrieve data from all IPFS gateways');
       }
-    } else {
-      await this._ensureClient();
-      if (!this.client) {
-        throw new Error('No IPFS client available');
+    }
+
+    if (this.provider === 'kubo') {
+      await this._ensureKubo();
+      if (!this.kubo) {
+        throw new Error('No Kubo RPC client available');
       }
 
       const chunks: Uint8Array[] = [];
-      for await (const chunk of this.client.cat(cid)) {
+      for await (const chunk of this.kubo.cat(cid) as AsyncIterable<Uint8Array>) {
         chunks.push(chunk);
       }
-
-      // Concatenate chunks and convert to string
-      const totalLength = chunks.reduce((acc, chunk) => acc + chunk.length, 0);
-      const result = new Uint8Array(totalLength);
-      let offset = 0;
-      for (const chunk of chunks) {
-        result.set(chunk, offset);
-        offset += chunk.length;
-      }
-
-      return new TextDecoder().decode(result);
+      return this._decodeChunks(chunks);
     }
+
+    await this._ensureHelia();
+    if (!this.heliaFs || !this.CID) {
+      throw new Error('No Helia UnixFS available');
+    }
+
+    const parsed = this.CID.parse(cid);
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of this.heliaFs.cat(parsed) as AsyncIterable<Uint8Array>) {
+      chunks.push(chunk);
+    }
+    return this._decodeChunks(chunks);
+  }
+
+  private _decodeChunks(chunks: Uint8Array[]): string {
+    const totalLength = chunks.reduce((acc, chunk) => acc + chunk.length, 0);
+    const result = new Uint8Array(totalLength);
+    let offset = 0;
+    for (const chunk of chunks) {
+      result.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return new TextDecoder().decode(result);
   }
 
   /**
@@ -285,11 +363,30 @@ export class IPFSClient {
    * Pin a CID to local node
    */
   async pin(cid: string): Promise<{ pinned: string[] }> {
-    await this._ensureClient();
-    if (!this.client) {
-      throw new Error('No IPFS client available');
+    if (this.provider === 'kubo') {
+      await this._ensureKubo();
+      if (!this.kubo) {
+        throw new Error('No Kubo RPC client available');
+      }
+
+      const maybe = this.kubo.pin.add(cid) as unknown;
+      if (maybe && typeof maybe === 'object' && Symbol.asyncIterator in (maybe as any)) {
+        for await (const _ of maybe as AsyncIterable<unknown>) {
+          // drain
+        }
+      } else {
+        await maybe;
+      }
+      return { pinned: [cid] };
     }
-    await this.client.pin.add(cid);
+
+    await this._ensureHelia();
+    if (!this.helia || !this.CID) {
+      throw new Error('No Helia node available');
+    }
+    for await (const _ of this.helia.pins.add(this.CID.parse(cid))) {
+      // drain
+    }
     return { pinned: [cid] };
   }
 
@@ -297,11 +394,30 @@ export class IPFSClient {
    * Unpin a CID from local node
    */
   async unpin(cid: string): Promise<{ unpinned: string[] }> {
-    await this._ensureClient();
-    if (!this.client) {
-      throw new Error('No IPFS client available');
+    if (this.provider === 'kubo') {
+      await this._ensureKubo();
+      if (!this.kubo) {
+        throw new Error('No Kubo RPC client available');
+      }
+
+      const maybe = this.kubo.pin.rm(cid) as unknown;
+      if (maybe && typeof maybe === 'object' && Symbol.asyncIterator in (maybe as any)) {
+        for await (const _ of maybe as AsyncIterable<unknown>) {
+          // drain
+        }
+      } else {
+        await maybe;
+      }
+      return { unpinned: [cid] };
     }
-    await this.client.pin.rm(cid);
+
+    await this._ensureHelia();
+    if (!this.helia || !this.CID) {
+      throw new Error('No Helia node available');
+    }
+    for await (const _ of this.helia.pins.rm(this.CID.parse(cid))) {
+      // drain
+    }
     return { unpinned: [cid] };
   }
 
@@ -321,72 +437,10 @@ export class IPFSClient {
     chainId?: number,
     identityRegistryAddress?: string
   ): Record<string, unknown> {
-    // Convert from internal format { type, value, meta } to ERC-8004 format { name, endpoint, version }
-    const services: Array<Record<string, unknown>> = [];
-    for (const ep of registrationFile.endpoints) {
-      const endpointDict: Record<string, unknown> = {
-        name: ep.type, // EndpointType enum value (e.g., "MCP", "A2A")
-        endpoint: ep.value,
-      };
-
-      // Spread meta fields (version, mcpTools, mcpPrompts, etc.) into the endpoint dict
-      if (ep.meta) {
-        Object.assign(endpointDict, ep.meta);
-      }
-
-      services.push(endpointDict);
-    }
-
-    // Build registrations array
-    const registrations: Array<Record<string, unknown>> = [];
-    if (registrationFile.agentId) {
-      // Support both internal SDK AgentId format ("chainId:tokenId") and CAIP-style ("eip155:chainId:tokenId")
-      const agentIdParts = registrationFile.agentId.split(':');
-      let parsedChainId: number | undefined;
-      let parsedTokenId: number | undefined;
-
-      if (agentIdParts.length === 3 && agentIdParts[0] === 'eip155') {
-        parsedChainId = parseInt(agentIdParts[1], 10);
-        parsedTokenId = parseInt(agentIdParts[2], 10);
-      } else {
-        const parsed = parseAgentId(registrationFile.agentId);
-        parsedChainId = parsed.chainId;
-        parsedTokenId = parsed.tokenId;
-      }
-
-      if (parsedTokenId === undefined || Number.isNaN(parsedTokenId)) {
-        throw new Error(`Invalid agentId for registration file: ${registrationFile.agentId}`);
-      }
-
-      const effectiveChainId = chainId ?? parsedChainId ?? 1;
-      const agentRegistry = identityRegistryAddress
-        ? `eip155:${effectiveChainId}:${identityRegistryAddress}`
-        : `eip155:${effectiveChainId}:{identityRegistry}`;
-      registrations.push({
-        agentId: parsedTokenId,
-        agentRegistry,
-      });
-    }
-
-    // Build ERC-8004 compliant registration file
-    return {
-      type: 'https://eips.ethereum.org/EIPS/eip-8004#registration-v1',
-      name: registrationFile.name,
-      description: registrationFile.description,
-      ...(registrationFile.image && { image: registrationFile.image }),
-      services,
-      ...(registrations.length > 0 && { registrations }),
-      ...(registrationFile.trustModels.length > 0 && {
-        supportedTrust: registrationFile.trustModels,
-      }),
-      active: registrationFile.active,
-      // ERC-8004 registration file uses `x402Support` (camelCase).
-      x402Support: registrationFile.x402support,
-      ...(registrationFile.entityType &&
-        registrationFile.entityType !== 'agent' && { entityType: registrationFile.entityType }),
-      ...(registrationFile.provenance && { provenance: registrationFile.provenance }),
-      ...(registrationFile.permissionManifest && { permissionManifest: registrationFile.permissionManifest }),
-    };
+    return buildErc8004RegistrationJson(registrationFile, {
+      chainId,
+      identityRegistryAddress,
+    });
   }
 
   /**
@@ -413,10 +467,12 @@ export class IPFSClient {
    * Close IPFS client connection
    */
   async close(): Promise<void> {
-    if (this.client) {
-      // Kubo RPC client doesn't expose a close method
-      // But we can clear the reference
-      this.client = undefined;
+    if (this.helia) {
+      await this.helia.stop();
     }
+    this.kubo = undefined;
+    this.heliaFs = undefined;
+    this.helia = undefined;
+    this.CID = undefined;
   }
 }

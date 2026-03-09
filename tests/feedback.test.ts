@@ -5,7 +5,7 @@
  * Flow:
  * 1. Create and register a new agent (so the test doesn't rely on a hardcoded agentId)
  * 2. Client submits one or more feedback entries
- * 3. Verify feedback data consistency (value, tags, capability, skill)
+ * 3. Verify feedback data consistency (value, tags, mcpTool, a2aSkills)
  * 4. Wait for blockchain finalization
  * 5. Verify feedback can be retrieved and searched
  */
@@ -57,23 +57,21 @@ function generateFeedbackData(index: number) {
     ['problem_solving', 'enterprise'],
     ['communication', 'enterprise'],
   ];
-
-  const capabilities = [
+  const mcpTools = [
     'data_analysis',
     'code_generation',
     'natural_language_understanding',
     'problem_solving',
     'communication',
   ];
-
   const skills = ['python', 'javascript', 'machine_learning', 'web_development', 'cloud_computing'];
 
   return {
     value: scores[Math.floor(Math.random() * scores.length)],
     tags: tagsSets[Math.floor(Math.random() * tagsSets.length)],
-    capability: capabilities[Math.floor(Math.random() * capabilities.length)],
-    skill: skills[Math.floor(Math.random() * skills.length)],
-    context: 'enterprise',
+    mcpTool: mcpTools[Math.floor(Math.random() * mcpTools.length)],
+    a2aSkills: [skills[Math.floor(Math.random() * skills.length)]],
+    a2aContextId: 'enterprise',
   };
 }
 
@@ -123,9 +121,41 @@ describeMaybe('Agent Feedback Flow with IPFS Pin', () => {
 
     // Register via HTTP URI (fast, no dependency on loading the file back)
     const mockUri = `https://example.com/agents/feedback_test_${unique}.json`;
-    const regTx = await agent.registerHTTP(mockUri);
-    const { result: reg } = await regTx.waitConfirmed({ timeoutMs: 120_000 });
-    agentId = reg.agentId!;
+    let regTx: any;
+    try {
+      regTx = await agent.registerHTTP(mockUri);
+    } catch (error) {
+      if (isRetriableNonceError(error)) {
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+        try {
+          regTx = await agent.registerHTTP(mockUri);
+        } catch (retryError) {
+          if (isSkippableLiveWriteError(retryError)) {
+            console.warn(`[live-test] Skipping agent registration due to chain/RPC issue: ${String(retryError)}`);
+            return;
+          }
+          throw retryError;
+        }
+      } else if (isSkippableLiveWriteError(error)) {
+        console.warn(`[live-test] Skipping agent registration due to chain/RPC issue: ${String(error)}`);
+        return;
+      } else {
+        throw error;
+      }
+    }
+
+    try {
+      const { result: reg } = await regTx.waitConfirmed({ timeoutMs: 120_000 });
+      agentId = reg.agentId!;
+    } catch (error) {
+      if (isSkippableLiveWriteError(error)) {
+        console.warn(
+          `[live-test] Skipping agent registration confirmation due to chain/RPC issue: ${String(error)}`
+        );
+        return;
+      }
+      throw error;
+    }
 
     expect(agentId).toBeTruthy();
     expect(agent.agentId).toBe(agentId);
@@ -155,6 +185,10 @@ describeMaybe('Agent Feedback Flow with IPFS Pin', () => {
     if (!clientSdk || !clientAddress) {
       throw new Error('Required SDKs not initialized. Previous tests must pass first.');
     }
+    if (!agentId) {
+      console.warn('[live-test] Skipping feedback submission because agent registration did not complete');
+      return;
+    }
 
     const numFeedback = 1;
     const feedbackEntries: Array<{
@@ -170,11 +204,11 @@ describeMaybe('Agent Feedback Flow with IPFS Pin', () => {
       const tag2 = feedbackData.tags[1];
       const endpoint = 'https://example.com/feedback'; // optional on-chain field
 
-      // Prepare off-chain feedback file (rich fields stored off-chain)
+      // Prepare off-chain feedback file (spec-aligned fields)
       const feedbackFile = clientSdk.prepareFeedbackFile({
-        capability: feedbackData.capability,
-        skill: feedbackData.skill,
-        context: { context: feedbackData.context },
+        mcpTool: feedbackData.mcpTool,
+        a2aSkills: feedbackData.a2aSkills,
+        a2aContextId: feedbackData.a2aContextId,
       });
 
       // Submit feedback - this will fail if client wallet has insufficient funds
@@ -218,8 +252,8 @@ describeMaybe('Agent Feedback Flow with IPFS Pin', () => {
 
       expect(feedback.value).toBe(feedbackData.value);
       expect(feedback.tags).toEqual(feedbackData.tags);
-      expect(feedback.capability).toBe(feedbackData.capability);
-      expect(feedback.skill).toBe(feedbackData.skill);
+      expect(feedback.mcpTool).toBe(feedbackData.mcpTool);
+      expect(feedback.a2aSkills).toEqual(feedbackData.a2aSkills);
       expect(feedback.fileURI).toBeTruthy();
       clientFeedbackId = feedback.idString;
 
@@ -231,6 +265,10 @@ describeMaybe('Agent Feedback Flow with IPFS Pin', () => {
   itMaybe('should append response to feedback', async () => {
     if (!agentSdkWithSigner || !clientAddress) {
       throw new Error('Required SDKs not initialized. Previous tests must pass first.');
+    }
+    if (!agentId) {
+      console.warn('[live-test] Skipping appendResponse because agent registration did not complete');
+      return;
     }
     if (!feedbackSubmitted || submittedFeedbackIndex === undefined) {
       // eslint-disable-next-line no-console
@@ -291,6 +329,10 @@ describeMaybe('Agent Feedback Flow with IPFS Pin', () => {
     if (!agentSdkWithSigner || !clientAddress) {
       throw new Error('Required SDKs not initialized. Previous tests must pass first.');
     }
+    if (!agentId) {
+      console.warn('[live-test] Skipping getFeedback because agent registration did not complete');
+      return;
+    }
     if (!feedbackSubmitted || submittedFeedbackIndex === undefined) {
       // eslint-disable-next-line no-console
       console.warn('[live-test] Skipping getFeedback because no feedback was submitted');
@@ -313,6 +355,10 @@ describeMaybe('Agent Feedback Flow with IPFS Pin', () => {
   itMaybe('should search feedback with filters', async () => {
     if (!agentSdkWithSigner) {
       throw new Error('Required SDKs not initialized. Previous tests must pass first.');
+    }
+    if (!agentId) {
+      console.warn('[live-test] Skipping feedback search because agent registration did not complete');
+      return;
     }
 
     // Wait for subgraph indexing
@@ -357,6 +403,10 @@ describeMaybe('Agent Feedback Flow with IPFS Pin', () => {
   itMaybe('should support multi-agent searchFeedback (agents[])', async () => {
     if (!agentSdkWithSigner) {
       throw new Error('Required SDKs not initialized. Previous tests must pass first.');
+    }
+    if (!agentId) {
+      console.warn('[live-test] Skipping multi-agent search because agent registration did not complete');
+      return;
     }
     if (!feedbackSubmitted) {
       // eslint-disable-next-line no-console

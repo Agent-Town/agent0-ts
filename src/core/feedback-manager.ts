@@ -187,7 +187,7 @@ export class FeedbackManager {
           ...(tag2OnChain ? { tag2: tag2OnChain } : {}),
           ...(endpointOnChain ? { endpoint: endpointOnChain } : {}),
 
-          // Rich/off-chain fields (capability/name/skill/task/context/proofOfPayment/etc)
+          // Rich/off-chain fields (spec-aligned FeedbackFile payload)
           ...(feedbackFile || {}),
         };
 
@@ -204,7 +204,9 @@ export class FeedbackManager {
     } else if (!this.ipfsClient && hasOffchainFile) {
       // If the caller provided an off-chain file but no IPFS backend is configured,
       // we should not silently drop it.
-      throw new Error('feedbackFile provided, but no IPFS backend is configured (pinata/node).');
+      throw new Error(
+        'feedbackFile provided, but no IPFS backend is configured (pinata/node/helia).'
+      );
     }
 
     // Submit to blockchain
@@ -249,13 +251,6 @@ export class FeedbackManager {
       // Extract typed values from the optional off-chain file
       const textValue =
         feedbackFile && typeof feedbackFile.text === 'string' ? feedbackFile.text : undefined;
-      const contextValue =
-        feedbackFile &&
-        feedbackFile.context &&
-        typeof feedbackFile.context === 'object' &&
-        !Array.isArray(feedbackFile.context)
-          ? (feedbackFile.context as Record<string, any>)
-          : undefined;
       const proofOfPaymentValue =
         feedbackFile &&
         feedbackFile.proofOfPayment &&
@@ -263,6 +258,12 @@ export class FeedbackManager {
         !Array.isArray(feedbackFile.proofOfPayment)
           ? (feedbackFile.proofOfPayment as Record<string, any>)
           : undefined;
+      const mcpTool = feedbackFile?.mcpTool;
+      const a2aSkills = Array.isArray(feedbackFile?.a2aSkills) ? feedbackFile.a2aSkills : undefined;
+      const a2aContextId = feedbackFile?.a2aContextId;
+      const a2aTaskId = feedbackFile?.a2aTaskId;
+      const oasfSkills = Array.isArray(feedbackFile?.oasfSkills) ? feedbackFile.oasfSkills : undefined;
+      const oasfDomains = Array.isArray(feedbackFile?.oasfDomains) ? feedbackFile.oasfDomains : undefined;
 
       return {
         id: [parsedId.agentId, parsedId.clientAddress, parsedId.feedbackIndex] as FeedbackIdTuple,
@@ -273,21 +274,19 @@ export class FeedbackManager {
         tags: [tag1OnChain || undefined, tag2OnChain || undefined].filter(Boolean) as string[],
         endpoint: endpointOnChain || undefined,
         text: textValue,
-        context: contextValue,
         proofOfPayment: proofOfPaymentValue,
         fileURI: feedbackUri || undefined,
         createdAt: Math.floor(Date.now() / 1000),
         answers: [],
         isRevoked: false,
-        // Off-chain only fields
-        capability:
-          feedbackFile && typeof feedbackFile.capability === 'string'
-            ? feedbackFile.capability
-            : undefined,
-        name: feedbackFile && typeof feedbackFile.name === 'string' ? feedbackFile.name : undefined,
-        skill:
-          feedbackFile && typeof feedbackFile.skill === 'string' ? feedbackFile.skill : undefined,
-        task: feedbackFile && typeof feedbackFile.task === 'string' ? feedbackFile.task : undefined,
+        mcpTool,
+        mcpPrompt: feedbackFile?.mcpPrompt,
+        mcpResource: feedbackFile?.mcpResource,
+        a2aSkills,
+        a2aContextId,
+        a2aTaskId,
+        oasfSkills,
+        oasfDomains,
       };
     });
   }
@@ -455,7 +454,8 @@ export class FeedbackManager {
                 chainId === 'default'
                   ? this.subgraphClient
                   : this.getSubgraphClientForChain?.(chainId) ||
-                    (chainId === this.defaultChainId ? this.subgraphClient : undefined),
+                    (chainId === this.defaultChainId ? this.subgraphClient : undefined) ||
+                    (!this.getSubgraphClientForChain ? this.subgraphClient : undefined),
               agents,
             }))
             .filter((target): target is { client: SubgraphClient; agents: AgentId[] } =>
@@ -551,20 +551,10 @@ export class FeedbackManager {
       };
     }
 
-    // Build context object if available
-    let context: Record<string, any> | undefined;
-    if (feedbackFile.context) {
-      try {
-        context =
-          typeof feedbackFile.context === 'string'
-            ? JSON.parse(feedbackFile.context)
-            : feedbackFile.context;
-      } catch {
-        context = { raw: feedbackFile.context };
-      }
-    }
-
     const id: FeedbackIdTuple = [agentId, clientAddress, feedbackIndex];
+    const a2aSkills = Array.isArray(feedbackFile.a2aSkills) ? feedbackFile.a2aSkills : undefined;
+    const oasfSkills = Array.isArray(feedbackFile.oasfSkills) ? feedbackFile.oasfSkills : undefined;
+    const oasfDomains = Array.isArray(feedbackFile.oasfDomains) ? feedbackFile.oasfDomains : undefined;
 
     return {
       id,
@@ -582,7 +572,6 @@ export class FeedbackManager {
             ? feedbackFile.endpoint || undefined
             : undefined,
       text: feedbackFile.text || undefined,
-      context,
       proofOfPayment,
       fileURI: feedbackData.feedbackURI || feedbackData.feedbackUri || undefined,
       createdAt: feedbackData.createdAt
@@ -590,10 +579,14 @@ export class FeedbackManager {
         : Math.floor(Date.now() / 1000),
       answers,
       isRevoked: feedbackData.isRevoked || false,
-      capability: feedbackFile.capability || undefined,
-      name: feedbackFile.name || undefined,
-      skill: feedbackFile.skill || undefined,
-      task: feedbackFile.task || undefined,
+      mcpTool: feedbackFile.mcpTool ?? undefined,
+      mcpPrompt: feedbackFile.mcpPrompt ?? undefined,
+      mcpResource: feedbackFile.mcpResource ?? undefined,
+      a2aSkills,
+      a2aContextId: feedbackFile.a2aContextId ?? undefined,
+      a2aTaskId: feedbackFile.a2aTaskId ?? undefined,
+      oasfSkills,
+      oasfDomains,
     };
   }
 

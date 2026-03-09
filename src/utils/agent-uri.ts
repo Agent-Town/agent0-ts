@@ -1,16 +1,17 @@
 import type { URI } from '../models/types.js';
 
 function supportedAgentUriSchemes(uri: string): boolean {
-  return uri.startsWith('ipfs://') || uri.startsWith('http://') || uri.startsWith('https://');
+  return (
+    uri.startsWith('ipfs://') ||
+    uri.startsWith('http://') ||
+    uri.startsWith('https://') ||
+    uri.startsWith('data:')
+  );
 }
 
 export function assertLoadableAgentUri(uri: URI, context: string = 'agent URI'): void {
   if (!uri || uri.trim() === '') {
     return;
-  }
-
-  if (uri.startsWith('data:')) {
-    throw new Error(`Data URIs are not supported for ${context}. Expected HTTP(S) or IPFS URI, got: ${uri}`);
   }
 
   if (!supportedAgentUriSchemes(uri)) {

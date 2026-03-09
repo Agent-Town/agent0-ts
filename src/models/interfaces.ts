@@ -125,39 +125,44 @@ export interface Feedback {
    */
   endpoint?: string;
   text?: string;
-  context?: Record<string, any>;
   proofOfPayment?: Record<string, any>;
   fileURI?: URI;
   createdAt: Timestamp;
   answers: Array<Record<string, any>>;
   isRevoked: boolean;
 
-  // Off-chain only fields (not stored on blockchain)
-  capability?: string; // MCP capability: "prompts", "resources", "tools", "completions"
-  name?: string; // MCP tool/resource name
-  skill?: string; // A2A skill
-  task?: string; // A2A task
+  // Subgraph FeedbackFile fields (spec-aligned)
+  mcpTool?: string;
+  mcpPrompt?: string;
+  mcpResource?: string;
+  a2aSkills?: string[];
+  a2aContextId?: string;
+  a2aTaskId?: string;
+  oasfSkills?: string[];
+  oasfDomains?: string[];
 }
 
 /**
  * Off-chain feedback file content.
  *
- * This is only uploaded (IPFS/Pinata/Filecoin/node) when you have rich fields that
+ * This is only uploaded (IPFS/Pinata/Helia/node) when you have rich fields that
  * do not fit on-chain. It intentionally does NOT include on-chain fields like:
  * score, tag1, tag2, endpoint.
  */
 export interface FeedbackFileInput {
   text?: string;
-  context?: Record<string, any>;
   proofOfPayment?: Record<string, any>;
 
-  // Off-chain only fields
-  capability?: string; // MCP capability: "prompts", "resources", "tools", "completions"
-  name?: string; // MCP tool/resource name
-  skill?: string; // A2A skill
-  task?: string; // A2A task
+  // Spec-aligned FeedbackFile fields (subgraph)
+  mcpTool?: string;
+  mcpPrompt?: string;
+  mcpResource?: string;
+  a2aSkills?: string[];
+  a2aContextId?: string;
+  a2aTaskId?: string;
+  oasfSkills?: string[];
+  oasfDomains?: string[];
 
-  // Allow callers to add extra keys if needed
   [key: string]: any;
 }
 

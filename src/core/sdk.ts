@@ -17,7 +17,12 @@ import type { AgentId, ChainId, Address, URI } from '../models/types.js';
 import { TrustModel } from '../models/enums.js';
 import { formatAgentId, parseAgentId } from '../utils/id-format.js';
 import { IPFS_GATEWAYS, TIMEOUTS } from '../utils/constants.js';
-import { assertLoadableAgentUri, transformRegistrationFile } from '../utils/index.js';
+import {
+  assertLoadableAgentUri,
+  decodeErc8004JsonDataUri,
+  isErc8004JsonDataUri,
+  transformRegistrationFile,
+} from '../utils/index.js';
 import { enforceOutboundUrlPolicy, type OutboundUrlPolicy } from '../utils/outbound-url-policy.js';
 import type { ChainClient, EIP1193Provider as Eip1193Provider } from './chain-client.js';
 import { ViemChainClient } from './viem-chain-client.js';
@@ -68,7 +73,13 @@ export interface SDKConfig {
   walletProvider?: Eip1193Provider;
   registryOverrides?: Record<ChainId, Record<string, Address>>;
   // IPFS configuration
-  ipfs?: 'node' | 'pinata';
+  /**
+   * IPFS provider selection:
+   * - `node`: connect to a running Kubo daemon via HTTP RPC API (`ipfsNodeUrl` required)
+   * - `helia`: run an embedded Helia node in-process (no daemon required)
+   * - `pinata`: pin via Pinata
+   */
+  ipfs?: 'node' | 'helia' | 'pinata';
   ipfsNodeUrl?: string;
   pinataJwt?: string;
   // Subgraph configuration
@@ -79,6 +90,11 @@ export interface SDKConfig {
   registrationIntegrity?: RegistrationIntegrityConfig;
   browserPrivateKeyPolicy?: BrowserPrivateKeyPolicy;
   metadataUpdatePolicy?: MetadataUpdatePolicy;
+  /**
+   * Max decoded bytes for ERC-8004 JSON base64 data URIs (on-chain registration files).
+   * Default: 256 KiB.
+   */
+  registrationDataUriMaxBytes?: number;
 }
 
 /**
@@ -97,6 +113,7 @@ export class SDK {
   private readonly _outboundUrlPolicy?: OutboundUrlPolicy;
   private readonly _registrationIntegrity: Required<RegistrationIntegrityConfig>;
   private readonly _metadataUpdatePolicy: MetadataUpdatePolicy;
+  private readonly _registrationDataUriMaxBytes: number;
 
   constructor(config: SDKConfig) {
     this._chainId = config.chainId;
@@ -106,6 +123,7 @@ export class SDK {
       hashMetadataKey: config.registrationIntegrity?.hashMetadataKey ?? 'registration.sha256',
     };
     this._metadataUpdatePolicy = config.metadataUpdatePolicy ?? 'best-effort';
+    this._registrationDataUriMaxBytes = config.registrationDataUriMaxBytes ?? 256 * 1024;
 
     // Initialize Chain client (viem-only)
     const privateKey = config.privateKey ?? config.signer;
@@ -198,13 +216,15 @@ export class SDK {
 
     if (requestedIpfsBackend === 'filecoinPin') {
       throw new Error(
-        "ipfs='filecoinPin' is not yet supported in the TypeScript SDK. Use 'pinata' or 'node'."
+        "ipfs='filecoinPin' is not yet supported in the TypeScript SDK. Use 'pinata', 'node', or 'helia'."
       );
     } else if (config.ipfs === 'node') {
       if (!config.ipfsNodeUrl) {
         throw new Error("ipfsNodeUrl is required when ipfs='node'");
       }
       ipfsConfig.url = config.ipfsNodeUrl;
+    } else if (config.ipfs === 'helia') {
+      ipfsConfig.embeddedHeliaEnabled = true;
     } else if (config.ipfs === 'pinata') {
       if (!config.pinataJwt) {
         throw new Error("pinataJwt is required when ipfs='pinata'");
@@ -212,7 +232,7 @@ export class SDK {
       ipfsConfig.pinataEnabled = true;
       ipfsConfig.pinataJwt = config.pinataJwt;
     } else {
-      throw new Error(`Invalid ipfs value: ${config.ipfs}. Must be 'node' or 'pinata'`);
+      throw new Error(`Invalid ipfs value: ${config.ipfs}. Must be 'node', 'helia', or 'pinata'`);
     }
 
     return new IPFSClient(ipfsConfig);
@@ -705,7 +725,8 @@ export class SDK {
       }
 
       assertLoadableAgentUri(tokenUri, 'agent registration URI');
-      let rawText: string;
+      let rawText: string | undefined;
+      let rawData: unknown;
       if (tokenUri.startsWith('ipfs://')) {
         const cid = tokenUri.slice(7);
         if (this._ipfsClient) {
@@ -744,13 +765,19 @@ export class SDK {
         }
         rawText = await response.text();
       } else if (tokenUri.startsWith('data:')) {
-        // Data URIs are not supported
-        throw new Error(`Data URIs are not supported. Expected HTTP(S) or IPFS URI, got: ${tokenUri}`);
+        if (!isErc8004JsonDataUri(tokenUri)) {
+          throw new Error(
+            `Unsupported data URI. Expected data:application/json;...;base64,... per ERC-8004, got: ${tokenUri.slice(0, 64)}...`
+          );
+        }
+        rawData = decodeErc8004JsonDataUri(tokenUri, {
+          maxBytes: this._registrationDataUriMaxBytes,
+        });
       } else {
         throw new Error(`Unsupported URI scheme for agent registration URI: ${tokenUri}`);
       }
 
-      if (expectedSha256) {
+      if (expectedSha256 && rawText !== undefined) {
         const computedSha256 = (await this._sha256HexUtf8(rawText)).toLowerCase();
         if (computedSha256 !== expectedSha256.toLowerCase()) {
           throw new Error(
@@ -759,11 +786,14 @@ export class SDK {
         }
       }
 
-      let rawData: unknown;
-      try {
-        rawData = JSON.parse(rawText);
-      } catch (error) {
-        throw new Error(`Invalid registration JSON: ${error instanceof Error ? error.message : String(error)}`);
+      if (rawData === undefined) {
+        try {
+          rawData = JSON.parse(rawText ?? '');
+        } catch (error) {
+          throw new Error(
+            `Invalid registration JSON: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
       }
 
       // Validate rawData is an object before transformation

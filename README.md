@@ -11,14 +11,20 @@ Agent0 SDK enables you to:
 - **OASF taxonomies** - Advertise standardized skills and domains using the Open Agentic Schema Framework (OASF) taxonomies for better discovery and interoperability
 - **Enable permissionless discovery** - Make your agent discoverable by other agents and platforms using rich search by attributes, capabilities, skills, tools, tasks, and x402 support
 - **Build reputation** - Give and receive feedback, retrieve feedback history, and search agents by reputation with cryptographic authentication
-- **Cross-chain registration** - One-line registration with IPFS nodes, Pinata, Filecoin, or HTTP URIs
+- **Cross-chain registration** - One-line registration with Kubo IPFS nodes, embedded Helia, Pinata, on-chain data URIs, or HTTP URIs
 - **Public indexing** - Subgraph indexing both on-chain and IPFS data for fast search and retrieval
 
-## Release (1.5.3)
+## Release (1.6.0)
 
-This release includes the unified agent discovery/search API.
+This release aligns feedback files with the deployed subgraph schema and removes legacy feedback fields.
 
-For breaking changes and migration notes, see `release_notes/RELEASE_NOTES_1.5.3.md` (and prior notes in `release_notes/`).
+It also updates the TypeScript SDK IPFS backends:
+
+- **`ipfs: 'node'` (Kubo daemon)** now uses `kubo-rpc-client` instead of the deprecated `ipfs-http-client` package
+- **`ipfs: 'helia'` (embedded)** runs an in-process Helia node with no external daemon
+- **On-chain registration files** are supported via ERC-8004 `data:application/json;base64,...` URIs
+
+For breaking changes and migration notes, see `release_notes/RELEASE_NOTES_1.6.0.md` (and prior notes in `release_notes/`).
 
 ## Extension Docs (v0.2)
 
@@ -38,7 +44,7 @@ See:
 - npm or yarn package manager
 - Private key for signing transactions (or run in read-only mode)
 - Access to an Ethereum RPC endpoint (e.g., Alchemy, Infura)
-- (Optional) IPFS provider account (Pinata, Filecoin, or local IPFS node)
+- (Optional) IPFS provider account or node access (Pinata, Helia, or local Kubo IPFS node)
 
 ### Install from npm
 
@@ -49,7 +55,7 @@ npm install agent0-sdk
 To install a specific version explicitly:
 
 ```bash
-npm install agent0-sdk@1.5.3
+npm install agent0-sdk@1.6.0
 ```
 
 **Note:** This package is an ESM (ECMAScript Module) package. Use `import` statements in your code:
@@ -81,7 +87,7 @@ const sdk = new SDK({
   chainId: 11155111, // Ethereum Sepolia testnet (use 1 for Ethereum Mainnet)
   rpcUrl: process.env.RPC_URL!,
   privateKey: process.env.PRIVATE_KEY ?? process.env.AGENT_PRIVATE_KEY, // Optional: for write operations
-  ipfs: 'pinata', // Options: 'pinata', 'node'
+  ipfs: 'pinata', // Options: 'pinata', 'node', 'helia'
   pinataJwt: process.env.PINATA_JWT, // For Pinata
   // Subgraph URL auto-defaults from DEFAULT_SUBGRAPH_URLS
 });
@@ -287,10 +293,10 @@ const summary = await sdk.getReputationSummary('1:123'); // Ethereum Mainnet
 ```typescript
 // Optional: prepare an OFF-CHAIN feedback file (only needed for rich fields)
 const feedbackFile = sdk.prepareFeedbackFile({
-  capability: 'tools',
-  name: 'code_generation',
-  skill: 'python',
-  context: { sessionId: 'abc' },
+  mcpTool: 'code_generation',
+  a2aSkills: ['python'],
+  a2aContextId: 'abc',
+  oasfSkills: ['natural_language_processing/natural_language_generation/summarization'],
 });
 
 // Give feedback (on-chain fields are passed directly)
@@ -306,10 +312,11 @@ const tx = await sdk.giveFeedback(
 const { receipt, result: feedback } = await tx.waitConfirmed();
 
 // Search feedback
-const feedbackResults = await sdk.searchFeedback(
-  { agentId: '11155111:123', capabilities: ['tools'] },
-  { minValue: 80, maxValue: 100 }
-);
+const feedbackResults = await sdk.searchFeedback({
+  agents: ['11155111:123'],
+  minValue: 80,
+  maxValue: 100,
+});
 
 // Get reputation summary
 const summary = await sdk.getReputationSummary('11155111:123');
@@ -328,28 +335,31 @@ const sdk = new SDK({
   pinataJwt: process.env.PINATA_JWT!,
 });
 
-// Option 2: IPFS Node
+// Option 2: Embedded Helia (no daemon required)
+const sdk = new SDK({
+  chainId: 11155111,
+  rpcUrl: '...',
+  signer: privateKey,
+  ipfs: 'helia',
+});
+
+// Option 3: IPFS Node (Kubo daemon HTTP RPC API)
 const sdk = new SDK({
   chainId: 11155111,
   rpcUrl: '...',
   signer: privateKey,
   ipfs: 'node',
-  ipfsNodeUrl: 'https://ipfs.infura.io:5001',
-});
-
-// Option 3: Pinata (free for ERC-8004 agents)
-const sdk = new SDK({
-  chainId: 11155111,
-  rpcUrl: '...',
-  signer: privateKey,
-  ipfs: 'pinata',
-  pinataJwt: 'your-pinata-jwt-token',
+  ipfsNodeUrl: 'http://localhost:5001',
 });
 
 // Option 4: HTTP registration (no IPFS)
 const sdk = new SDK({ chainId: 11155111, rpcUrl: '...', signer: privateKey });
 const regTx = await agent.registerHTTP('https://example.com/agent-registration.json');
 await regTx.waitConfirmed();
+
+// Option 5: fully on-chain ERC-8004 registration
+const onChainTx = await agent.registerOnChain();
+await onChainTx.waitConfirmed();
 ```
 
 ## Multi-Chain Support
